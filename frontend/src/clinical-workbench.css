@@ -1,0 +1,32 @@
+.clinical-workbench { max-width: none; overflow-y: auto; padding: 26px clamp(18px, 3vw, 48px) 48px; gap: 17px; }
+.clinical-workbench .workbench-title { flex: none; }
+.clinical-workbench .workbench-title h1 { margin: 7px 0 5px; font-size: clamp(25px, 2.4vw, 37px); letter-spacing: -.055em; }
+.clinical-workbench .workbench-title p { margin: 0; color: var(--ink-soft); font-size: 13px; }
+.clinical-workbench .patient-band { flex: none; position: sticky; top: 0; z-index: 2; }
+.clinical-state-banner { flex: none; display: flex; gap: 14px; align-items: flex-start; padding: 12px 16px; border: 1px solid #efdbb8; border-radius: 10px; background: #fff8e9; color: #8a622a; font-size: 12px; line-height: 1.5; }
+.clinical-state-banner strong { flex: none; color: #86571b; }
+.clinical-empty-state { flex: none; border: 1px solid var(--line); border-radius: 16px; background: var(--paper); min-height: 210px; padding: clamp(24px, 4vw, 52px); box-shadow: var(--shadow); }
+.clinical-empty-state h2 { font-size: 25px; margin-bottom: 9px; }
+.clinical-empty-state p { max-width: 720px; color: var(--ink-soft); line-height: 1.7; font-size: 14px; }
+.clinical-empty-state button { border: 0; border-radius: 7px; background: var(--teal); color: white; padding: 9px 15px; }
+.clinical-results { display: flex; flex-direction: column; gap: 18px; padding-bottom: 20px; }
+.clinical-results-heading, .clinical-group-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 20px; }
+.clinical-results-heading h2 { font-size: 27px; margin: 4px 0 0; }
+.clinical-results-heading > span, .clinical-group-heading > span { color: var(--ink-soft); font-size: 12px; }
+.clinical-candidate-group { display: grid; grid-template-columns: repeat(auto-fill,minmax(300px,1fr)); gap: 12px; }
+.clinical-group-heading { grid-column: 1 / -1; }
+.clinical-group-heading h3 { margin: 0; font-size: 17px; }
+.clinical-candidate { background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 18px; box-shadow: var(--shadow); }
+.clinical-candidate-heading { display: flex; flex-direction: column; gap: 6px; }
+.clinical-candidate-heading span { color: var(--teal); font-size: 11px; letter-spacing: .08em; }
+.clinical-candidate-heading strong { font-size: 17px; line-height: 1.4; }
+.clinical-candidate p { margin: 11px 0; color: var(--ink-soft); font-size: 12px; }
+.clinical-candidate-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.clinical-candidate-tags span { border-radius: 5px; background: #edf4ef; padding: 5px 7px; font-size: 11px; color: #315f55; }
+.clinical-candidate small { display: block; margin-top: 13px; color: #9b6c35; }
+@media (max-width: 900px) {
+  .clinical-workbench .patient-band { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; }
+  .clinical-workbench .patient-band-heading { grid-column: 1 / -1; }
+  .clinical-workbench .patient-fact { border-left: 0; padding: 0; }
+  .clinical-state-banner { flex-direction: column; gap: 4px; }
+}

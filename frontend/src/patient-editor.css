@@ -1,0 +1,77 @@
+.patient-editor { position: fixed; inset: 0; z-index: 15; display: flex; flex-direction: column; min-width: 320px; background: #f4f2ed; color: #173031; }
+.editor-topbar { min-height: 72px; flex: none; display: flex; justify-content: space-between; align-items: center; gap: 20px; padding: 11px 29px; background: #fffefa; border-bottom: 1px solid #e1e7de; }
+.editor-kicker { color: #4c8576; font-size: 10px; font-weight: 760; letter-spacing: .17em; }
+.editor-topbar h2 { margin: 5px 0 0; font-size: 21px; line-height: 1.3; letter-spacing: -.035em; }
+.editor-topbar h2 span { margin-left: 13px; color: #8b6b3e; font-size: 12px; font-weight: 570; letter-spacing: 0; }
+.editor-close { border: 1px solid #d4e0d7; background: #fff; color: #2e6359; padding: 9px 13px; border-radius: 8px; font-size: 12px; font-weight: 700; white-space: nowrap; }
+.editor-close:hover { background: #eff6f0; }
+.editor-template { min-height: 66px; flex: none; display: grid; grid-template-columns: minmax(0, 2fr) 1fr 1fr; gap: 0; margin: 12px 22px; padding: 12px 18px; background: #183e40; color: #fff; border-radius: 9px; }
+.editor-template > div { display: flex; flex-direction: column; gap: 4px; min-width: 0; padding: 0 18px; border-left: 1px solid rgba(255,255,255,.17); }
+.editor-template > div:first-child { border: 0; padding-left: 0; }
+.editor-template span { color: #a6c7ba; font-size: 10px; }
+.editor-template strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 620; }
+.editor-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 178px minmax(0, 1fr) 260px; gap: 12px; padding: 0 22px 12px; }
+.editor-sections, .patient-editor .editor-main, .editor-issues { min-height: 0; overflow-y: auto; background: #fffefa; border: 1px solid #e2e7df; border-radius: 11px; box-shadow: 0 8px 22px rgba(25,54,52,.04); }
+.editor-sections { padding: 17px 10px; }
+.editor-sections > p { margin: 0 11px 13px; color: #87a095; font-size: 10px; font-weight: 750; letter-spacing: .13em; }
+.editor-sections button { display: flex; flex-direction: column; gap: 4px; width: 100%; padding: 12px 12px; margin-bottom: 4px; text-align: left; color: #45645a; background: transparent; border: 0; border-radius: 7px; }
+.editor-sections button.selected { background: #e7f2ea; box-shadow: inset 3px 0 #4c9a7f; color: #19554b; }
+.editor-sections button:hover { background: #f1f7f0; }
+.editor-sections button strong { font-size: 12px; }
+.editor-sections button small { color: #84998e; font-size: 10px; }
+.patient-editor .editor-main { display: block; flex: initial; width: auto; max-width: none; height: auto; margin: 0; padding: 25px 28px 36px; }
+.editor-section-heading { padding-bottom: 19px; border-bottom: 1px solid #e6ebe4; margin-bottom: 20px; }
+.editor-section-heading > span { color: #4b8b78; font-size: 10px; font-weight: 750; letter-spacing: .12em; }
+.editor-section-heading h3 { margin: 6px 0; font-size: 23px; letter-spacing: -.035em; }
+.editor-section-heading p { color: #71867a; font-size: 11px; line-height: 1.7; margin: 0; }
+.editor-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 17px 16px; }
+.editor-field, .editor-medication-grid label { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.editor-field-label, .editor-medication-grid label > span { color: #315049; font-size: 11px; font-weight: 690; }
+.editor-field-label em, .editor-medication-grid em { color: #a87737; font-size: 10px; font-weight: 560; font-style: normal; margin-left: 6px; }
+.editor-field input, .editor-medication-grid input { width: 100%; height: 37px; padding: 0 10px; border: 1px solid #d9e4da; background: #fff; border-radius: 7px; color: #193b37; font-size: 12px; }
+.editor-field input:focus, .editor-medication-grid input:focus { border-color: #6ba994; outline: 3px solid #e4f0e7; }
+.editor-field input::placeholder, .editor-medication-grid input::placeholder { color: #aab9ae; }
+.editor-field > small { color: #899c90; font-size: 10px; }
+.editor-unbound { display: flex; align-items: center; height: 37px; padding: 0 10px; background: #f5f7f3; color: #8b998e; border: 1px dashed #d8e0d7; border-radius: 7px; font-size: 11px; }
+.editor-medication { margin-bottom: 16px; padding: 17px; border: 1px solid #e1e8df; background: #fdfefa; border-radius: 9px; }
+.editor-medication-head { display: flex; align-items: flex-start; gap: 12px; }
+.editor-medication-head > span:first-child { color: #a9c2b2; font: 20px Georgia,serif; }
+.editor-medication-head div { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.editor-medication-head strong { font-size: 14px; color: #24483f; }
+.editor-medication-head small { color: #96a99c; font-size: 10px; }
+.editor-medication-status { padding: 3px 6px; background: #fff3df; border: 1px solid #f0debc; border-radius: 4px; color: #896024; font-size: 10px; }
+.template-reference { margin: 15px 0; padding: 10px 12px; background: #f2f6f0; border-left: 3px solid #a8cab4; }
+.template-reference > span { color: #5d8573; font-size: 10px; font-weight: 750; }
+.template-reference p { margin: 4px 0 0; color: #5c7064; line-height: 1.6; font-size: 11px; }
+.editor-medication-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; }
+.editor-medication-note { grid-column: 1 / -1; }
+.editor-empty { padding: 25px; background: #f7f9f5; border: 1px dashed #dbe4d9; border-radius: 9px; color: #7e9185; font-size: 12px; }
+.editor-review h4 { margin: 20px 0 10px; color: #315849; font-size: 13px; }
+.editor-review > div { display: flex; justify-content: space-between; gap: 20px; padding: 10px 0; border-bottom: 1px solid #edf0e9; font-size: 12px; }
+.editor-review > div span { color: #788c80; flex: none; }
+.editor-review > div strong { text-align: right; font-weight: 620; overflow-wrap: anywhere; }
+.editor-issues { padding: 22px 17px; }
+.editor-issues-kicker { display: flex; justify-content: space-between; color: #598373; font-size: 10px; font-weight: 750; letter-spacing: .12em; }
+.editor-issues-kicker span { color: #946d33; background: #fff0d7; border-radius: 100%; width: 17px; height: 17px; display: grid; place-items: center; }
+.editor-issues h3 { font-size: 15px; line-height: 1.4; margin: 16px 0 18px; }
+.editor-issues > div p { display: flex; gap: 10px; margin: 0 0 12px; padding-bottom: 12px; border-bottom: 1px solid #eef0e9; color: #687b6d; font-size: 11px; line-height: 1.65; }
+.editor-issues > div p span { color: #ba934d; font: 16px Georgia,serif; }
+.editor-issues > small { color: #9a8b70; line-height: 1.65; font-size: 10px; }
+.editor-footer { min-height: 68px; flex: none; display: flex; justify-content: space-between; align-items: center; gap: 15px; padding: 10px 23px; background: #fffefa; border-top: 1px solid #dfe7df; }
+.editor-footer > div:first-child { display: flex; flex-direction: column; gap: 3px; }
+.editor-footer strong { color: #28544a; font-size: 12px; }
+.editor-footer span { color: #8c9e91; font-size: 10px; }
+.editor-footer-actions { display: flex; gap: 7px; }
+.editor-footer-actions button { min-height: 35px; padding: 7px 10px; color: #2a6658; background: #fff; border: 1px solid #d7e3d7; border-radius: 6px; font-size: 11px; font-weight: 650; }
+.editor-footer-actions button:nth-child(2) { background: #206b60; color: #fff; border-color: #206b60; }
+.editor-footer-actions button.editor-primary-action { background: #206b60; color: #fff; border-color: #206b60; }
+.editor-footer-actions button:disabled { color: #97a69d; background: #f6f8f4; border-color: #e4e9e3; cursor: not-allowed; }
+.editor-dialog-backdrop { position: absolute; inset: 0; z-index: 3; display: grid; place-items: center; background: rgba(13,39,39,.45); }
+.editor-leave-dialog { width: min(390px, calc(100vw - 32px)); background: #fffefa; border-radius: 12px; padding: 24px; box-shadow: 0 24px 70px rgba(10,40,40,.22); }
+.editor-leave-dialog h3 { margin: 0 0 8px; font-size: 18px; }
+.editor-leave-dialog p { color: #6e8075; font-size: 12px; line-height: 1.7; }
+.editor-leave-dialog > div { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+.editor-leave-dialog button { padding: 8px 11px; border: 1px solid #dbe5d9; background: #fff; border-radius: 6px; color: #31594d; }
+.editor-leave-dialog button.danger { background: #9a573c; border-color: #9a573c; color: #fff; }
+@media (max-width: 1000px) { .editor-body { grid-template-columns: 145px minmax(0,1fr) 220px; gap: 8px; padding: 0 10px 10px; } .editor-template { margin: 8px 10px; } .editor-footer { padding: 9px 11px; } }
+@media (max-width: 760px) { .patient-editor { overflow-y: auto; } .editor-topbar { padding: 10px 13px; } .editor-topbar h2 { font-size: 17px; } .editor-topbar h2 span { display: block; margin-left: 0; } .editor-template { grid-template-columns: 1fr 1fr; gap: 10px; } .editor-template > div:first-child { grid-column: 1 / -1; } .editor-template > div:nth-child(2) { border: 0; padding-left: 0; } .editor-body { display: block; overflow: visible; } .editor-sections { display: flex; overflow-x: auto; padding: 8px; margin-bottom: 8px; } .editor-sections > p { display: none; } .editor-sections button { width: auto; flex: none; min-width: 90px; margin: 0; } .patient-editor .editor-main { min-height: 330px; overflow: visible; padding: 20px 15px; } .editor-issues { margin-top: 8px; } .editor-fields, .editor-medication-grid { grid-template-columns: 1fr; } .editor-footer { position: sticky; bottom: 0; align-items: flex-start; flex-direction: column; } .editor-footer-actions { flex-wrap: wrap; } }

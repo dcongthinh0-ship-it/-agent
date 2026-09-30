@@ -1,0 +1,28 @@
+.blueprint-stage { overflow: auto; padding: 12px; background: #edf0eb; border: 1px solid #e0e6df; border-radius: 9px; }
+.blueprint-paper { width: min(100%, 900px); min-height: 560px; margin: 0 auto; padding: 38px 44px 45px; background: #fff; color: #273431; box-shadow: 0 4px 24px rgba(21,48,42,.09); font-family: "Songti SC", "STSong", "SimSun", serif; font-size: 13px; line-height: 1.62; }
+.blueprint-paper-meta { display: flex; justify-content: space-between; gap: 15px; margin-bottom: 22px; padding-bottom: 9px; border-bottom: 1px solid #d6ded7; color: #778e82; font: 10px/1.5 -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; }
+.blueprint-heading { margin: 15px 0 10px; text-align: center; font-size: 17px; font-weight: 700; line-height: 1.6; }
+.blueprint-paragraph { margin: 4px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.blueprint-field-paragraph { margin: 7px 0; }
+.blueprint-blank { height: 9px; }
+.blueprint-table-scroll { width: 100%; overflow-x: auto; margin: 12px 0; }
+.blueprint-table { width: 100%; min-width: 520px; border-collapse: collapse; table-layout: fixed; }
+.blueprint-table td { border: 1px solid #899d95; padding: 6px 8px; vertical-align: middle; min-width: 70px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.blueprint-table:has(.blueprint-medication-cell) { min-width: 920px; }
+.blueprint-medication-cell { background: #fbfdf9; }
+.blueprint-medication-control { display: flex; flex-direction: column; gap: 3px; width: 100%; min-width: 94px; margin-top: 5px; font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; }
+.blueprint-medication-control small { color: #478273; font-size: 9px; font-weight: 650; }
+.blueprint-medication-control input { width: 100%; min-width: 0; height: 27px; padding: 3px 5px; border: 1px solid #89b7a4; border-radius: 3px; background: #f7fcf8; color: #184c40; font: 11px/1.4 -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; }
+.blueprint-medication-control input:focus { outline: 2px solid #c8e4d2; outline-offset: 1px; }
+.blueprint-medication-control input::placeholder { color: #9cb9a7; }
+.blueprint-medication-value { display: block; margin-top: 5px; padding-top: 3px; border-top: 1px dotted #b7c9be; color: #8b9f92; font: 10px/1.4 -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; }
+.blueprint-table-section td { background: #f4f7f3; font-weight: 700; }
+.blueprint-form-text { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 5px 8px; width: 100%; }
+.blueprint-source-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.blueprint-slot { display: inline-block; min-width: 90px; padding: 1px 5px; color: #7d9188; background: #f5f7f5; border-bottom: 1px dashed #bac9c0; font: 10px/1.65 -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; }
+.blueprint-slot-input { min-width: 110px; max-width: 190px; height: 29px; padding: 4px 7px; border: 1px solid #8dbba6; border-radius: 4px; color: #184c40; background: #f7fcf8; font: 12px/1.4 -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; }
+.blueprint-slot-input:focus { outline: 2px solid #c8e4d2; outline-offset: 1px; }
+.blueprint-slot-input::placeholder { color: #8fab9a; }
+.blueprint-unrendered { color: #9b682f; background: #fff5e8; padding: 8px; }
+.blueprint-paper-foot { margin-top: 24px; padding-top: 12px; border-top: 1px solid #e2e7e2; color: #8b9a90; font: 10px/1.6 -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; }
+@media (max-width: 760px) { .blueprint-stage { padding: 5px; } .blueprint-paper { padding: 20px 14px; } .blueprint-paper-meta { display: block; } .blueprint-paper-meta span { display: block; } .blueprint-table { min-width: 430px; } }
