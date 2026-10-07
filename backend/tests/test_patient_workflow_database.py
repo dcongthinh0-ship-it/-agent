@@ -189,6 +189,24 @@ async def test_patient_flow_idempotency_save_confirm_and_history(environment):
         == 2
     )
     assert (await w.read_instance(p, context_id, instance))["confirmed_revision_id"] is None
+    from chemo_agent_product.agents import AgentService
+    from chemo_agent_product.patient_contracts import AgentRequest
+
+    service = AgentService(w)
+    agent = await service.enqueue(
+        p, context_id, AgentRequest(kind="RECOMMENDATION"), "main-not-configured"
+    )
+    assert agent["status"] == "FAILED" and agent["error_code"] == "MODEL_NOT_CONFIGURED"
+    review = await service.enqueue(
+        p,
+        context_id,
+        AgentRequest(kind="REVIEWER", revision_id=UUID(saved2["revision_id"])),
+        "review-not-configured",
+    )
+    assert review["status"] == "FAILED"
+    read = await service.read(p, context_id, UUID(review["agent_run_id"]))
+    assert read["outputs"] == [] and read["tools"] == []
+    assert read["revision_id"] == saved2["revision_id"]
 
 
 @pytest.mark.asyncio

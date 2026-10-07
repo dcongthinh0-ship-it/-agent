@@ -82,6 +82,8 @@ class RegimenDetail(BaseModel):
     medications: list[MedicationItem]
     content_blocks: list[ContentBlock]
     content_truncated: bool = False
+    word_layout: dict[str, Any] | None = None
+    layout_verification: dict[str, Any] | None = None
 
 
 class EvidenceSummary(BaseModel):

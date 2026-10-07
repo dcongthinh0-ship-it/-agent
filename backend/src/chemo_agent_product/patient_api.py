@@ -3,10 +3,11 @@ from __future__ import annotations
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, Request
+from fastapi import APIRouter, Depends, Header, Query, Request
 
 from chemo_agent_product.patient_contracts import (
     ActionInput,
+    AgentRequest,
     ConfirmInput,
     LaunchInput,
     RefreshInput,
@@ -66,6 +67,11 @@ async def detail(context_id: UUID, candidate_id: UUID, p: PrincipalDep, w: Workf
     return await w.detail(p, context_id, candidate_id)
 
 
+@router.get("/contexts/{context_id}/candidates/{candidate_id}/evidence")
+async def evidence(context_id: UUID, candidate_id: UUID, p: PrincipalDep, w: WorkflowDep):
+    return await w.candidate_evidence(p, context_id, candidate_id)
+
+
 @router.post("/contexts/{context_id}/candidates/{candidate_id}/select")
 async def select(
     context_id: UUID,
@@ -103,7 +109,56 @@ async def confirm(
     w: WorkflowDep,
     idempotency_key: CommandKey,
 ):
-    return await w.confirm(p, context_id, instance_id, request, idempotency_key)
+    result = await w.confirm(p, context_id, instance_id, request, idempotency_key)
+    from chemo_agent_product.agents import AgentService
+
+    try:
+        review = await AgentService(w).enqueue(
+            p,
+            context_id,
+            AgentRequest(kind="REVIEWER", revision_id=request.revision_id),
+            f"auto-review:{result['confirmation_id']}",
+        )
+        return {
+            **result,
+            "reviewer_status": review["status"],
+            "reviewer_run_id": review["agent_run_id"],
+        }
+    except BusinessError as exc:
+        return {**result, "reviewer_status": "REQUEST_FAILED", "reviewer_error_code": exc.code}
+
+
+@router.post("/contexts/{context_id}/agent-runs")
+async def start_agent(
+    context_id: UUID,
+    request: AgentRequest,
+    p: PrincipalDep,
+    w: WorkflowDep,
+    idempotency_key: CommandKey,
+):
+    from chemo_agent_product.agents import AgentService
+
+    return await AgentService(w).enqueue(p, context_id, request, idempotency_key)
+
+
+@router.get("/contexts/{context_id}/agent-runs/{run_id}")
+async def read_agent(context_id: UUID, run_id: UUID, p: PrincipalDep, w: WorkflowDep):
+    from chemo_agent_product.agents import AgentService
+
+    return await AgentService(w).read(p, context_id, run_id)
+
+
+@router.get("/contexts/{context_id}/agent-runs")
+async def list_agents(
+    context_id: UUID,
+    p: PrincipalDep,
+    w: WorkflowDep,
+    kind: Annotated[str, Query(pattern="^(RECOMMENDATION|REVIEWER)$")],
+    revision_id: UUID | None = None,
+):
+    from chemo_agent_product.agents import AgentService
+
+    return await AgentService(w).list_runs(p, context_id, kind, revision_id)
 
 
 @router.post("/contexts/{context_id}/actions")

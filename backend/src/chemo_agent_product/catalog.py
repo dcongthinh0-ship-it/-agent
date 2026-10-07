@@ -17,6 +17,7 @@ from chemo_agent_product.contracts import (
     RegimenPage,
     RegimenSummary,
 )
+from chemo_agent_product.domain import fingerprint
 
 
 class CatalogReader(Protocol):
@@ -128,6 +129,19 @@ class PostgresCatalogReader:
                    ORDER BY section_code,display_order,id LIMIT 201""",
                 version_id,
             )
+            layout = None
+            if await connection.fetchval(
+                "SELECT to_regclass('catalog_bridge.form_layout_asset') IS NOT NULL"
+            ):
+                tree = json.loads(row["document_tree"]) if row["document_tree"] else {}
+                layout = await connection.fetchrow(
+                    """SELECT layout_payload::text,verification_report::text
+                  FROM catalog_bridge.form_layout_asset
+                  WHERE regimen_version_id=$1 AND blueprint_hash=$2
+                  ORDER BY created_at DESC LIMIT 1""",
+                    version_id,
+                    fingerprint(tree),
+                )
         return RegimenDetail.model_validate(
             {
                 **dict(row),
@@ -136,6 +150,10 @@ class PostgresCatalogReader:
                 "medications": [MedicationItem.model_validate(dict(x)) for x in medications],
                 "content_blocks": [ContentBlock.model_validate(dict(x)) for x in blocks[:200]],
                 "content_truncated": len(blocks) > 200,
+                "word_layout": json.loads(layout["layout_payload"]) if layout else None,
+                "layout_verification": json.loads(layout["verification_report"])
+                if layout
+                else None,
             }
         )
 

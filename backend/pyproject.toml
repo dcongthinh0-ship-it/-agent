@@ -9,6 +9,7 @@ description = "化疗智能体产品只读 API 首批"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "asyncpg>=0.30,<1",
+  "claude-agent-sdk>=0.1,<1",
   "fastapi>=0.115,<1",
   "httpx>=0.28,<1",
   "pydantic-settings>=2.7,<3",
@@ -37,3 +38,5 @@ select = ["E", "F", "I", "UP", "B"]
 "src/chemo_agent_product/worker.py" = ["E501"]
 "src/chemo_agent_product/knowledge.py" = ["E501"]
 "src/chemo_agent_product/migrate.py" = ["E501"]
+"src/chemo_agent_product/agents.py" = ["E501"]
+"src/chemo_agent_product/word_layout.py" = ["E501"]

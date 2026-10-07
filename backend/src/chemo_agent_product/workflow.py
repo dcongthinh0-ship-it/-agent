@@ -390,8 +390,46 @@ class Workflow:
             "template": row["template_payload"],
             "template_hash": row["template_hash"],
             "snapshot": snapshot,
+            "field_values": self.initial_fields(
+                row["template_payload"], PatientSnapshot.model_validate(snapshot)
+            ),
             "assessment": dict(row),
         }
+
+    async def candidate_evidence(self, p, context_id, candidate_id):
+        """Read exact versions in the saved assessment, never today's replacement evidence."""
+        async with self.pool.acquire() as c, c.transaction(readonly=True):
+            _, candidate = await self.candidate(c, context_id, p, candidate_id)
+            records = []
+            for ref in candidate["evidence_refs"] or []:
+                if ref["namespace"] != "knowledge.evidence_record_version":
+                    raise BusinessError(
+                        "EVIDENCE_NAMESPACE_INVALID", "本次证据来源命名空间不正确", 409
+                    )
+                row = await c.fetchrow(
+                    "SELECT * FROM knowledge.evidence_record_version WHERE id=$1", UUID(ref["id"])
+                )
+                if (
+                    not row
+                    or row["content_hash"] != ref["content_hash"]
+                    or str(row["version_no"]) != ref["version"]
+                ):
+                    raise BusinessError(
+                        "KNOWLEDGE_VERSION_CHANGED", "本次证据固定版本不一致，请核对来源", 409
+                    )
+                records.append(
+                    {
+                        "ref": ref,
+                        "source": "FDA"
+                        if row["source_code"] in {"FDA", "DAILYMED"}
+                        else row["source_code"],
+                        "excerpt": row["verbatim_excerpt"],
+                        "locator": row["source_locator"],
+                        "native_recommendation": row["source_recommendation_raw"],
+                        "native_category": row["source_evidence_category_raw"],
+                    }
+                )
+        return {"candidate_id": str(candidate_id), "items": records}
 
     async def select(self, p, context_id, candidate_id, key):
         async with self.pool.acquire() as c, c.transaction():
@@ -520,6 +558,9 @@ class Workflow:
             history=[dict(r) for r in history],
             data_labels=row["data_labels"] or [],
             safety_labels=row["safety_labels"] or [],
+            issues=rev["selection_manifest"].get("issues", []) if rev else [],
+            calculations=rev["selection_manifest"].get("reference_doses", {}) if rev else {},
+            bsa=rev["selection_manifest"].get("bsa") if rev else None,
         )
 
     async def save(self, p, context_id, instance_id, request: SaveInput, key):

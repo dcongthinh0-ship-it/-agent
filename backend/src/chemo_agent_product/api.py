@@ -12,6 +12,7 @@ from fastapi import Depends, FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from chemo_agent_product.agents import AgentService
 from chemo_agent_product.catalog import CatalogReader, PostgresCatalogReader
 from chemo_agent_product.config import Settings
 from chemo_agent_product.contracts import (
@@ -48,6 +49,7 @@ def create_app(
         app.state.database_status = "TEST_DOUBLE" if reader else "UNCONFIGURED"
         app.state.context_reader = context_reader
         app.state.workflow = None
+        app.state.agents = None
         worker_task = None
         app.state.context_status = (
             "TEST_ONLY" if context_reader and config.read_enabled else "NOT_CONNECTED"
@@ -64,9 +66,11 @@ def create_app(
                 )
                 if migrated and config.launch_signing_key:
                     app.state.workflow = Workflow(pool, config)
+                    app.state.agents = AgentService(app.state.workflow)
                     app.state.context_status = "TEST_ONLY"
                     if config.worker_enabled:
                         worker = Worker(pool, config)
+                        worker.agent_handler = app.state.agents.run_job
                         worker_task = asyncio.create_task(worker.loop())
             except (OSError, asyncpg.PostgresError, TimeoutError):
                 # 健康状态保持可读，前端可以明确呈现数据库不可用。
@@ -139,6 +143,15 @@ def create_app(
     @app.get("/health/live")
     async def health() -> dict[str, str]:
         return {"status": "ok", "product": "化疗智能体"}
+
+    @app.get("/api/v1/host-contract")
+    async def host_contract():
+        return {
+            "version": "1",
+            "trusted_origins": config.trusted_host_origins,
+            "token_transport": "POST_MESSAGE_MEMORY_ONLY",
+            "hospital_sso": "NOT_CONFIGURED",
+        }
 
     @app.get("/api/v1/status", response_model=CapabilityStatus)
     async def status(request: Request) -> CapabilityStatus:
