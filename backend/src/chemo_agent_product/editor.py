@@ -93,7 +93,10 @@ def compile_revision(
     for index, med in enumerate(template["medications"], 1):
         edit = medication_values.get(med["item_key"], {})
         dose = edit.get("actual_dose_text", "").strip()
-        if re.fullmatch(r"[+-]?\d+(?:\.\d+)?", dose) and float(dose) <= 0:
+        numeric = re.match(r"^([+-]?(?:\d+(?:\.\d*)?|\.\d+))(?=$|[^\d.])", dose)
+        if (numeric and float(numeric[1]) <= 0) or re.match(
+            r"^[+-]?(?:nan|inf(?:inity)?)(?:\s|$)", dose, re.IGNORECASE
+        ):
             raise BusinessError("DOSE_INVALID", "实际剂量必须为正数", 422)
         day = edit.get("administration_day_text") or med.get("administration_day_text")
         dose_reference = None

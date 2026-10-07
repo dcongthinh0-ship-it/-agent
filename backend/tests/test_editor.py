@@ -91,3 +91,25 @@ def test_unknown_hospital_codes_never_become_ready():
     assert "hospital_item_code" not in result["orders"][0]
     assert result["fields"]["patient_name"] == "contract"
     assert result["manifest"]["reference_doses"]["M1"]["state"] == "NOT_COMPUTABLE"
+
+
+@pytest.mark.parametrize("dose", ["0", "0 mg", "0.0mg", "-5 mg", "-.5 mg", "NaN mg", "inf"])
+def test_nonpositive_dose_with_units_is_rejected(dose):
+    with pytest.raises(BusinessError, match="DOSE_INVALID"):
+        compile_revision(
+            template(),
+            patient(),
+            SaveInput(expected_row_version=1, medication_values={"M1": {"actual_dose_text": dose}}),
+            {},
+        )
+
+
+@pytest.mark.parametrize("dose", ["10 mg", ".5 mg", "100-150mg", "10mg/日"])
+def test_positive_dose_text_is_preserved(dose):
+    result = compile_revision(
+        template(),
+        patient(),
+        SaveInput(expected_row_version=1, medication_values={"M1": {"actual_dose_text": dose}}),
+        {},
+    )
+    assert result["orders"][0]["dose_text_raw"] == dose
