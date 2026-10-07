@@ -11,7 +11,7 @@ const sections: { id: Section; label: string; caption: string }[] = [
   { id: 'plan', label: '治疗安排', caption: '医生填写' },
   { id: 'medications', label: '主治疗药品', caption: '逐行核对' },
   { id: 'team', label: '医师团队', caption: '身份待接入' },
-  { id: 'review', label: '草稿预览', caption: '未保存' },
+  { id: 'review', label: '修改预览', caption: '未保存' },
 ]
 
 const emptyMedication = (): MedicationDraft => ({ dose: '', route: '', frequency: '', day: '', note: '' })
@@ -65,7 +65,6 @@ export function PatientEditor({ detail, mode, onClose, onEdit }: { detail: Regim
   const changeCount = modifiedFields.length + modifiedMedications.length
   const issues = useMemo(() => [
     '尚无患者、就诊、医生身份与快照，无法创建患者方案实例。',
-    detail.version_status === 'DRAFT' ? '固定版本仍为草稿，不能作为已发布的临床模板。' : null,
     '院方药品、途径、频次和日期编码尚未映射，医嘱未编译。',
     detail.medications.some(item => !item.frequency_text) ? '原方案存在未配置频次的药品行，需逐行核对。' : null,
   ].filter((issue): issue is string => Boolean(issue)), [detail])
@@ -76,7 +75,7 @@ export function PatientEditor({ detail, mode, onClose, onEdit }: { detail: Regim
 
   return <div className="patient-editor" role="dialog" aria-modal="true" aria-label={mode === 'view' ? '方案表单只读查看' : '患者方案编辑预览'}>
     <header className="editor-topbar"><div><span className="editor-kicker">PATIENT REGIMEN / {mode === 'view' ? 'VIEW' : 'EDIT PREVIEW'}</span><h2>{mode === 'view' ? '方案表单查看' : '患者方案编辑'} <span>未绑定患者 · {mode === 'view' ? '只读' : '仅本次预览'}</span></h2></div><button className="editor-close" onClick={close}>返回方案浏览</button></header>
-    <div className="editor-template"><div><span>固定来源</span><strong>{detail.regimen_code} · {detail.display_name}</strong></div><div><span>方案版本</span><strong>V{detail.version_no} · {detail.version_status === 'DRAFT' ? '草稿' : detail.version_status}</strong></div><div><span>患者 / 就诊</span><strong>未接入 / 未接入</strong></div></div>
+    <div className="editor-template"><div><span>固定来源</span><strong>{detail.regimen_code} · {detail.display_name}</strong></div><div><span>方案版本</span><strong>V{detail.version_no}</strong></div><div><span>患者 / 就诊</span><strong>未接入 / 未接入</strong></div></div>
     <div className="editor-body">
       <nav className="editor-sections" aria-label="方案表单章节"><p>表单章节</p>{sections.filter(item => mode === 'edit' || item.id !== 'review').map(item => <button key={item.id} className={section === item.id ? 'selected' : ''} onClick={() => setSection(item.id)}><strong>{item.label}</strong><small>{item.caption}</small></button>)}</nav>
       <main className="editor-main">
@@ -85,7 +84,7 @@ export function PatientEditor({ detail, mode, onClose, onEdit }: { detail: Regim
         {section === 'plan' && <><div className="editor-section-heading"><span>02 / 医生填写</span><h3>治疗安排</h3><p>{mode === 'view' ? '同一份表单以只读模式展示；尚未创建患者实例，因此本次值为空。' : '字段来自当前固定版本。输入只在当前页面内存中预览，离开后丢弃。'}</p></div><div className="editor-fields">{planFields.map(field => <FieldControl key={field.field_key} field={field} mode={mode} value={fieldValues[field.field_key] || ''} onChange={value => setFieldValues(current => ({ ...current, [field.field_key]: value }))} />)}</div></>}
         {section === 'medications' && <><div className="editor-section-heading"><span>03 / 结构化药品行</span><h3>主治疗药品</h3><p>固定版本提供参考；本次剂量、频次和日期须由医生核对。此处不计算标准剂量，也不生成可交付医嘱。</p></div>{detail.medications.length ? detail.medications.map((item, index) => <MedicationCard key={item.item_key} item={item} index={index} mode={mode} draft={medicationValues[item.item_key] || emptyMedication()} onChange={next => updateMedication(item.item_key, next)} />) : <p className="editor-empty">该版本没有结构化主治疗药品行，不能从原文猜补。</p>}</>}
         {section === 'team' && <><div className="editor-section-heading"><span>04 / 医师身份</span><h3>医师团队</h3><p>医师角色来自复用组件。未接院方医师目录和可信身份前，不把手输姓名当作签名身份。</p></div><div className="editor-fields">{teamFields.map(field => <FieldControl key={field.field_key} field={field} mode={mode} value="" onChange={() => {}} />)}</div></>}
-        {section === 'review' && <><div className="editor-section-heading"><span>05 / 当前内存草稿</span><h3>修改预览</h3><p>以下仅显示本次页面修改；未写入患者方案实例或修订。</p></div>{changeCount === 0 ? <p className="editor-empty">尚未填写任何本次方案值。</p> : <div className="editor-review"><h4>字段修改 · {modifiedFields.length}</h4>{modifiedFields.map(field => <div key={field.field_key}><span>{field.label}</span><strong>{fieldValues[field.field_key]}</strong></div>)}<h4>药品行修改 · {modifiedMedications.length}</h4>{modifiedMedications.map(item => <div key={item.item_key}><span>{item.generic_name || item.source_drug_name}</span><strong>{Object.entries(medicationValues[item.item_key] || {}).filter(([, value]) => value).map(([key, value]) => `${({ dose: '剂量', route: '途径', frequency: '频次', day: '日期', note: '说明' } as Record<string, string>)[key]}：${value}`).join('；')}</strong></div>)}</div>}</>}
+        {section === 'review' && <><div className="editor-section-heading"><span>05 / 本次修改</span><h3>修改预览</h3><p>以下仅显示本次页面修改；未写入患者方案实例或修订。</p></div>{changeCount === 0 ? <p className="editor-empty">尚未填写任何本次方案值。</p> : <div className="editor-review"><h4>字段修改 · {modifiedFields.length}</h4>{modifiedFields.map(field => <div key={field.field_key}><span>{field.label}</span><strong>{fieldValues[field.field_key]}</strong></div>)}<h4>药品行修改 · {modifiedMedications.length}</h4>{modifiedMedications.map(item => <div key={item.item_key}><span>{item.generic_name || item.source_drug_name}</span><strong>{Object.entries(medicationValues[item.item_key] || {}).filter(([, value]) => value).map(([key, value]) => `${({ dose: '剂量', route: '途径', frequency: '频次', day: '日期', note: '说明' } as Record<string, string>)[key]}：${value}`).join('；')}</strong></div>)}</div>}</>}
       </main>
       <aside className="editor-issues"><p className="editor-issues-kicker">待解决项 <span>{issues.length}</span></p><h3>尚不能保存或确认</h3><div>{issues.map((issue, index) => <p key={issue}><span>{String(index + 1).padStart(2, '0')}</span>{issue}</p>)}</div><small>规则、剂量计算和独立 Reviewer 尚未接入；当前提示不等于临床评估结果。</small></aside>
     </div>

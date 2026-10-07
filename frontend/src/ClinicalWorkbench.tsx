@@ -12,7 +12,6 @@ function CandidateGroup({ title, items }: { title: string; items: PreparedCandid
     <div className="clinical-group-heading"><h3>{title}</h3><span>{items.length} 条</span></div>
     {items.map(item => <article className="clinical-candidate" key={item.candidate_id}>
       <div className="clinical-candidate-heading"><span>{item.regimen_code || '未映射方案'}</span><strong>{item.display_name || '方案名称待核对'}</strong></div>
-      <p>方案版本：{item.version_status || '未映射'} · 证据状态：{item.evidence_state}</p>
       <div className="clinical-candidate-tags">
         {item.evidence_level !== null && <span>项目配置 Level {item.evidence_level}{item.evidence_grade ? ` · ${item.evidence_grade}` : ''}</span>}
         {item.data_labels.length > 0 && <span>{item.data_labels.length} 项数据提示</span>}
