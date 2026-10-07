@@ -17,6 +17,7 @@ class LaunchInput(Contract):
     operator_dept_name: str = Field(min_length=1, max_length=128)
     request_scene: Literal["AUTO_PREPARE", "ORDER_CONTEXT", "ASSISTANT_OPEN"] = "AUTO_PREPARE"
     session_scope_ref: str = Field(min_length=1, max_length=128)
+    client_generation: int | None = Field(default=None, ge=1, le=9223372036854775807)
     previous_context_id: UUID | None = None
 
 

@@ -88,6 +88,13 @@ async def instance(context_id: UUID, instance_id: UUID, p: PrincipalDep, w: Work
     return await w.read_instance(p, context_id, instance_id)
 
 
+@router.get("/contexts/{context_id}/instances/{instance_id}/revisions/{revision_id}")
+async def historical_revision(
+    context_id: UUID, instance_id: UUID, revision_id: UUID, p: PrincipalDep, w: WorkflowDep
+):
+    return await w.read_instance(p, context_id, instance_id, revision_id)
+
+
 @router.post("/contexts/{context_id}/instances/{instance_id}/revisions")
 async def save(
     context_id: UUID,

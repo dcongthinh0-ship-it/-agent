@@ -65,7 +65,7 @@ TOOLS = (
 
 def prompt_path(kind: str):
     return (
-        Path(__file__).resolve().parents[2]
+        Path(__file__).resolve().parent
         / "prompts"
         / ("reviewer.v1.md" if kind == "REVIEWER" else "recommendation.v1.md")
     )
@@ -117,12 +117,24 @@ class ClaudeAdapter:
         self.settings = settings
 
     def options(self, kind, prompt, server, cwd):
-        from claude_agent_sdk import ClaudeAgentOptions, PermissionResultDeny
+        from claude_agent_sdk import ClaudeAgentOptions, HookMatcher, PermissionResultDeny
 
         async def deny(name, args, context):
             return PermissionResultDeny(
                 message="Only the bound clinical read tools are permitted", interrupt=True
             )
+
+        async def restrict(input_data, tool_use_id, context):
+            name = input_data.get("tool_name")
+            if name not in {f"mcp__clinical__{tool}" for tool in TOOLS}:
+                return {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": "Only bound clinical tools are permitted",
+                    }
+                }
+            return {}
 
         config = self.settings
         if not config.model_configured:
@@ -132,6 +144,10 @@ class ClaudeAdapter:
             "ANTHROPIC_AUTH_TOKEN": "",
             "CLAUDE_CODE_OAUTH_TOKEN": "",
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+            "CLAUDE_CONFIG_DIR": str(Path(cwd) / ".claude-runtime"),
+            "CLAUDE_CODE_USE_BEDROCK": "0",
+            "CLAUDE_CODE_USE_VERTEX": "0",
+            "CLAUDE_CODE_USE_FOUNDRY": "0",
         }
         if config.model_base_url:
             env["ANTHROPIC_BASE_URL"] = config.model_base_url
@@ -158,6 +174,7 @@ class ClaudeAdapter:
             plugins=[],
             permission_mode="dontAsk",
             can_use_tool=deny,
+            hooks={"PreToolUse": [HookMatcher(hooks=[restrict])]},
             model=config.reviewer_model_name
             if kind == "REVIEWER" and config.reviewer_model_name
             else config.model_name,

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime
+from datetime import date, datetime
+from decimal import Decimal
 from typing import Any, Literal
 from uuid import UUID
 
@@ -14,8 +15,23 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 def fingerprint(value: Any) -> str:
     if isinstance(value, BaseModel):
         value = value.model_dump(mode="json")
+
+    def encode(item):
+        if isinstance(item, (date, datetime)):
+            return item.isoformat()
+        if isinstance(item, (UUID, Decimal)):
+            return str(item)
+        if isinstance(item, BaseModel):
+            return item.model_dump(mode="json")
+        raise TypeError(f"unsupported hash value: {type(item).__name__}")
+
     payload = json.dumps(
-        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+        default=encode,
     )
     return hashlib.sha256(payload.encode()).hexdigest()
 

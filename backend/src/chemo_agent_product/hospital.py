@@ -53,6 +53,14 @@ class FactMap(Contract):
     value_map: dict[str, str] = Field(default_factory=dict)
 
 
+class TextMap(Contract):
+    operation: str
+    records_pointer: str
+    text_pointer: str
+    record_id_pointer: str | None = None
+    category: str = Field(min_length=1, max_length=100)
+
+
 class AdapterProfile(Contract):
     schema_version: Literal["hospital-adapter.v1"] = "hospital-adapter.v1"
     contract_version: str
@@ -60,6 +68,7 @@ class AdapterProfile(Contract):
     hospital_code: str | None = None
     operations: dict[str, OperationConfig]
     facts: dict[str, FactMap] = Field(default_factory=dict)
+    text_records: list[TextMap] = Field(default_factory=list)
     timeout_seconds: float = Field(default=15, gt=0, le=60)
 
 
@@ -100,6 +109,11 @@ class ConfiguredHospitalReader:
         self.transport = transport
         if self.profile and any(op not in READ_OPERATIONS for op in self.profile.operations):
             raise ValueError("unknown hospital read operation; configure verified contract names")
+        if self.profile and any(
+            mapping.operation not in self.profile.operations
+            for mapping in [*self.profile.facts.values(), *self.profile.text_records]
+        ):
+            raise ValueError("field or text mapping points to an unconfigured operation")
 
     async def fetch(self, patient: str, encounter: str, operator: str) -> list[SourcePayload]:
         profile = self.profile
@@ -261,9 +275,59 @@ class ConfiguredHospitalReader:
                 )
             if extracted:
                 current = extracted[0]
-                if any((f.value, f.unit) != (current.value, current.unit) for f in extracted[1:]):
+                if any(
+                    (f.value, f.unit, f.status) != (current.value, current.unit, current.status)
+                    for f in extracted[1:]
+                ):
                     current = current.model_copy(update={"status": "CONFLICT"})
                 facts[code] = current
+        texts = []
+        for mapping in self.profile.text_records:
+            for source in sources:
+                if source.operation != mapping.operation:
+                    continue
+                records = pointer(source.payload, mapping.records_pointer)
+                if records is None:
+                    continue
+                if not isinstance(records, list):
+                    raise BusinessError("TEXT_MAPPING_INVALID", "文本列表定位字段尚未正确配置", 503)
+                for index, record in enumerate(records):
+                    content = pointer(record, mapping.text_pointer)
+                    if content is None:
+                        continue
+                    if not isinstance(content, str):
+                        raise BusinessError(
+                            "TEXT_MAPPING_INVALID", "病历文本定位字段未返回文本", 503
+                        )
+                    if not content.strip():
+                        continue
+                    external_id = (
+                        pointer(record, mapping.record_id_pointer)
+                        if mapping.record_id_pointer
+                        else None
+                    )
+                    locator = f"{mapping.records_pointer}/{index}{mapping.text_pointer}"
+                    texts.append(
+                        {
+                            "record_id": fingerprint(
+                                [source.source_key, locator, external_id, content]
+                            ),
+                            "external_record_id": external_id,
+                            "category": mapping.category,
+                            "text": content,
+                            "locator": {"json_pointer": locator},
+                            "source": Reference(
+                                namespace=f"hospital:{source.operation}",
+                                id=source.source_key,
+                                version=self.profile.contract_version,
+                                content_hash=source.content_hash,
+                            ).model_dump(mode="json"),
+                        }
+                    )
         return PatientSnapshot(
-            patient_ref=patient, encounter_ref=encounter, captured_at=datetime.now(UTC), facts=facts
+            patient_ref=patient,
+            encounter_ref=encounter,
+            captured_at=datetime.now(UTC),
+            facts=facts,
+            text_records=texts,
         )

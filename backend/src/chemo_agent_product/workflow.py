@@ -184,6 +184,55 @@ class Workflow:
                 )
             if hospital["status"] != "TEST_ONLY":
                 raise BusinessError("CLINICAL_AUTH_NOT_CONFIGURED", "真实院方身份适配尚未配置", 503)
+            # Serialize one host session, including requests which reach the server
+            # out of order before either has returned a context to the browser.
+            await c.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1,0))",
+                f"launch:{p.hospital_id}:{p.staff_id}:{request.session_scope_ref}",
+            )
+            latest = await c.fetchrow(
+                """SELECT lc.*,pat.external_patient_id,enc.external_encounter_id
+                FROM clinical.launch_context lc
+                JOIN clinical.patient_reference pat ON pat.id=lc.patient_reference_id
+                JOIN clinical.encounter_reference enc ON enc.id=lc.encounter_reference_id
+                WHERE lc.hospital_id=$1 AND lc.operator_staff_id=$2 AND lc.session_scope_ref=$3
+                ORDER BY lc.host_generation DESC,lc.created_at DESC,lc.id DESC LIMIT 1""",
+                p.hospital_id,
+                p.staff_id,
+                request.session_scope_ref,
+            )
+            same_patient = bool(
+                latest
+                and latest["external_patient_id"] == request.patient_id
+                and latest["external_encounter_id"] == request.encounter_id
+            )
+            generation = request.client_generation or (
+                latest["host_generation"] + 1 if latest else 1
+            )
+            if latest and request.client_generation and generation < latest["host_generation"]:
+                raise BusinessError("LAUNCH_SUPERSEDED", "该请求属于已切换的患者，已停止处理", 409)
+            if request.request_scene == "ASSISTANT_OPEN" or (
+                latest and request.client_generation and generation == latest["host_generation"]
+            ):
+                if (
+                    not same_patient
+                    or not latest
+                    or latest["context_state"] != "ACTIVE"
+                    or latest["expires_at"] <= datetime.now(UTC)
+                ):
+                    raise BusinessError(
+                        "PREPARE_CONTEXT_REQUIRED", "当前患者尚无有效后台准备任务", 409
+                    )
+                await self.scoped_context(c, latest["id"], p)
+                result = {
+                    "context_id": str(latest["id"]),
+                    "launch_url": f"/?context_id={latest['id']}",
+                    "prepare_status": "EXISTING",
+                    "patient_id": request.patient_id,
+                    "encounter_id": request.encounter_id,
+                }
+                await self.complete(c, cmd, result, "launch_context", latest["id"])
+                return result
             patient = await c.fetchrow(
                 """INSERT INTO clinical.patient_reference
               (created_by_principal,hospital_id,external_patient_id,reference_state) VALUES($1,$2,$3,'UNVERIFIED')
@@ -217,38 +266,14 @@ class Workflow:
                 or (p.encounter_id and p.encounter_id != encounter["id"])
             ):
                 raise BusinessError("PATIENT_SCOPE_MISMATCH", "患者与就诊归属不一致", 403)
-            if request.request_scene == "ASSISTANT_OPEN":
-                previous = await c.fetchrow(
-                    """SELECT * FROM clinical.launch_context WHERE hospital_id=$1
-                  AND patient_reference_id=$2 AND encounter_reference_id=$3 AND operator_staff_id=$4
-                  AND session_scope_ref=$5 AND context_state='ACTIVE' AND expires_at>now()
-                  ORDER BY created_at DESC LIMIT 1""",
-                    p.hospital_id,
-                    patient["id"],
-                    encounter["id"],
-                    p.staff_id,
-                    request.session_scope_ref,
-                )
-                if previous:
-                    result = {
-                        "context_id": str(previous["id"]),
-                        "launch_url": f"/?context_id={previous['id']}",
-                        "prepare_status": "EXISTING",
-                        "patient_id": request.patient_id,
-                        "encounter_id": request.encounter_id,
-                    }
-                    await self.complete(c, cmd, result, "launch_context", previous["id"])
-                    return result
-            if request.previous_context_id:
-                await c.execute(
-                    """UPDATE clinical.launch_context SET context_state='SUPERSEDED'
-                  WHERE id=$1 AND hospital_id=$2 AND operator_staff_id=$3 AND session_scope_ref=$4
-                  AND context_state='ACTIVE'""",
-                    request.previous_context_id,
-                    p.hospital_id,
-                    p.staff_id,
-                    request.session_scope_ref,
-                )
+            await c.execute(
+                """UPDATE clinical.launch_context SET context_state='SUPERSEDED'
+                WHERE hospital_id=$1 AND operator_staff_id=$2 AND session_scope_ref=$3
+                AND context_state='ACTIVE'""",
+                p.hospital_id,
+                p.staff_id,
+                request.session_scope_ref,
+            )
             context = await insert(
                 c,
                 "clinical.launch_context",
@@ -265,6 +290,7 @@ class Workflow:
                     expires_at=datetime.now(UTC)
                     + timedelta(seconds=self.settings.context_ttl_seconds),
                     session_scope_ref=request.session_scope_ref,
+                    host_generation=generation,
                 ),
             )
             await self.prepare(c, context, p, 1)
@@ -485,7 +511,7 @@ class Workflow:
         row = await c.fetchrow(
             """SELECT i.*,t.template_payload,t.content_hash AS template_hash,t.availability_state,
           cand.applicability_snapshot,cand.evidence_refs,cand.data_labels,cand.safety_labels,cand.evidence_state,
-          d.knowledge_manifest FROM clinical.patient_regimen_instance i
+          d.knowledge_manifest,d.snapshot_id AS origin_snapshot_id FROM clinical.patient_regimen_instance i
           JOIN catalog_bridge.template_version_reference t ON t.id=i.template_ref_id
           LEFT JOIN clinical.decision_candidate cand ON cand.id=i.origin_candidate_id
           LEFT JOIN clinical.decision_run d ON d.id=cand.decision_run_id
@@ -509,18 +535,25 @@ class Workflow:
                 result[key] = field["default_value"]
         return result
 
-    async def read_instance(self, p, context_id, instance_id):
+    async def read_instance(self, p, context_id, instance_id, revision_id=None):
         async with self.pool.acquire() as c, c.transaction(readonly=True):
             context, row = await self.instance(c, context_id, p, instance_id)
+            if revision_id and not await c.fetchval(
+                "SELECT id FROM clinical.patient_regimen_revision WHERE id=$1 AND instance_id=$2",
+                revision_id,
+                instance_id,
+            ):
+                raise BusinessError("REVISION_FORBIDDEN", "该修订不属于本次患者方案", 403)
+            chosen_revision = revision_id or row["current_revision_id"]
             rev = (
                 await c.fetchrow(
                     "SELECT * FROM clinical.patient_regimen_revision WHERE id=$1",
-                    row["current_revision_id"],
+                    chosen_revision,
                 )
-                if row["current_revision_id"]
+                if chosen_revision
                 else None
             )
-            snapshot_id = rev["snapshot_id"] if rev else context["snapshot_id"]
+            snapshot_id = rev["snapshot_id"] if rev else row["origin_snapshot_id"]
             payload = await c.fetchval(
                 "SELECT clinical_payload FROM clinical.clinical_snapshot WHERE id=$1", snapshot_id
             )
@@ -586,19 +619,61 @@ class Workflow:
                 or row["current_revision_id"] != request.base_revision_id
             ):
                 raise BusinessError("REVISION_CONFLICT", "方案已有新修订，请重新读取后修改", 409)
-            if request.base_revision_id and not request.change_reason:
+            if request.base_revision_id and not (request.change_reason or "").strip():
                 raise BusinessError("CHANGE_REASON_REQUIRED", "修改已保存方案时请填写修改原因", 422)
+            previous = (
+                await c.fetchrow(
+                    "SELECT * FROM clinical.patient_regimen_revision WHERE id=$1",
+                    request.base_revision_id,
+                )
+                if request.base_revision_id
+                else None
+            )
+            snapshot_id = previous["snapshot_id"] if previous else row["origin_snapshot_id"]
+            if snapshot_id != context["snapshot_id"]:
+                raise BusinessError(
+                    "SNAPSHOT_CHANGED",
+                    "患者数据已更新，请从当前候选重新选用；历史方案保持原快照",
+                    409,
+                )
             snapshot_payload = await c.fetchval(
                 "SELECT clinical_payload FROM clinical.clinical_snapshot WHERE id=$1",
-                context["snapshot_id"],
+                snapshot_id,
             )
             if not snapshot_payload:
                 raise BusinessError("SNAPSHOT_NOT_READY", "患者数据尚未准备完成", 409)
             snapshot = PatientSnapshot.model_validate(snapshot_payload)
+            inherited_fields = {}
+            inherited_meds = {}
+            if previous:
+                allowed = {
+                    f["field_key"]
+                    for f in row["template_payload"]["fields"]
+                    if f["edit_policy"] == "RUNTIME_EDITABLE"
+                }
+                inherited_fields = {
+                    v["field_key"]: v["value_json"]
+                    for v in await c.fetch(
+                        "SELECT field_key,value_json FROM clinical.patient_regimen_field_value WHERE revision_id=$1",
+                        previous["id"],
+                    )
+                    if v["field_key"] in allowed
+                }
+                inherited_meds = previous["selection_manifest"].get("medication_values", {})
+            merged = SaveInput.model_validate(
+                {
+                    **request.model_dump(mode="json"),
+                    "field_values": {**inherited_fields, **request.field_values},
+                    "medication_values": {
+                        **inherited_meds,
+                        **request.model_dump(mode="json")["medication_values"],
+                    },
+                }
+            )
             compiled = compile_revision(
                 row["template_payload"],
                 snapshot,
-                request,
+                merged,
                 self.initial_fields(row["template_payload"], snapshot),
                 (row["knowledge_manifest"] or {}).get("calculation", {}),
             )
@@ -630,7 +705,7 @@ class Workflow:
                     instance_id=instance_id,
                     revision_no=revision_no,
                     base_revision_id=request.base_revision_id,
-                    snapshot_id=context["snapshot_id"],
+                    snapshot_id=snapshot_id,
                     save_command_id=cmd,
                     saved_by_staff_id=p.staff_id,
                     editor_schema_version="patient-editor.v1",
@@ -653,8 +728,8 @@ class Workflow:
                         field_key=field,
                         value_json=value,
                         value_state="MISSING" if value in (None, "") else "PRESENT",
-                        value_source="DOCTOR" if field in request.field_values else "SNAPSHOT",
-                        provenance_ref={"snapshot_id": str(context["snapshot_id"])},
+                        value_source="DOCTOR" if field in merged.field_values else "SNAPSHOT",
+                        provenance_ref={"snapshot_id": str(snapshot_id)},
                     ),
                 )
             for order in compiled["orders"]:

@@ -23,6 +23,21 @@ class AgentService:
         self.settings = workflow.settings
         self.adapter = adapter or ClaudeAdapter(self.settings)
 
+    def profile_payload(self, kind):
+        return {
+            "kind": kind,
+            "model": (self.settings.reviewer_model_name or self.settings.model_name)
+            if kind == "REVIEWER"
+            else self.settings.model_name,
+            "prompt_hash": fingerprint(prompt_path(kind).read_text()),
+            "tools": list(TOOLS),
+            "max_turns": self.settings.model_max_turns,
+            "max_budget_usd": self.settings.model_max_budget_usd,
+            "timeout": self.settings.model_timeout_seconds,
+            "schema": "agent-output.v1",
+            "sdk_version": sdk_version(),
+        }
+
     async def enqueue(self, p, context_id, request: AgentRequest, key):
         async with self.pool.acquire() as c, c.transaction():
             context = await self.workflow.scoped_context(c, context_id, p)
@@ -86,19 +101,7 @@ class AgentService:
                 raise BusinessError(
                     "AGENT_REVISION_NOT_EXPECTED", "主 Agent 任务不接受复核修订", 422
                 )
-            profile_payload = {
-                "kind": request.kind,
-                "model": self.settings.reviewer_model_name or self.settings.model_name
-                if request.kind == "REVIEWER"
-                else self.settings.model_name,
-                "prompt_hash": fingerprint(prompt_path(request.kind).read_text()),
-                "tools": list(TOOLS),
-                "max_turns": self.settings.model_max_turns,
-                "max_budget_usd": self.settings.model_max_budget_usd,
-                "timeout": self.settings.model_timeout_seconds,
-                "schema": "agent-output.v1",
-                "sdk_version": sdk_version(),
-            }
+            profile_payload = self.profile_payload(request.kind)
             profile_hash = fingerprint(profile_payload)
             await c.execute(
                 "SELECT pg_advisory_xact_lock(hashtextextended($1,0))", f"profile:{request.kind}"
@@ -275,6 +278,10 @@ class AgentService:
                 run["id"],
             )
         try:
+            if fingerprint(self.profile_payload(run["profile_kind"])) != run["config_hash"]:
+                raise BusinessError(
+                    "AGENT_PROFILE_CHANGED", "智能体配置已变更，请重新请求当前任务", 409
+                )
             bindings = await self.bindings(run)
 
             async def dispatch(name, args):
@@ -504,11 +511,38 @@ class AgentService:
             elif name == "read_revision":
                 result = {"revision": b["revision"], "orders": b["orders"]}
             elif name == "read_calculations":
-                result = {
-                    "calculation_policy": b["manifest"].get("calculation", {}),
-                    "calculations": b["revision"]["selection_manifest"] if b["revision"] else {},
-                    "state": "SAVED_REVISION_ONLY" if b["revision"] else "NOT_COMPUTED",
-                }
+                if b["revision"]:
+                    saved = b["revision"]["selection_manifest"]
+                    result = {
+                        "state": "SAVED_REVISION",
+                        "bsa": saved.get("bsa"),
+                        "reference_doses": saved.get("reference_doses", {}),
+                        "revision_id": str(b["revision"]["id"]),
+                    }
+                else:
+                    from chemo_agent_product.domain import PatientSnapshot
+                    from chemo_agent_product.editor import compile_revision
+                    from chemo_agent_product.patient_contracts import SaveInput
+
+                    snapshot = PatientSnapshot.model_validate(b["snapshot"])
+                    items = []
+                    for candidate in b["candidates"].values():
+                        template = candidate["template_payload"]
+                        calculated = compile_revision(
+                            template,
+                            snapshot,
+                            SaveInput(expected_row_version=1),
+                            self.workflow.initial_fields(template, snapshot),
+                            b["manifest"].get("calculation", {}),
+                        )
+                        items.append(
+                            {
+                                "candidate_id": str(candidate["id"]),
+                                "bsa": calculated["manifest"]["bsa"],
+                                "reference_doses": calculated["manifest"]["reference_doses"],
+                            }
+                        )
+                    result = {"state": "CONTROLLED_REFERENCE_ONLY", "items": items}
             else:
                 query = str(args["query"]).strip()
                 if not query or len(query) > 200:
@@ -520,7 +554,9 @@ class AgentService:
                         if query.casefold() in e["verbatim_excerpt"].casefold()
                     ][:20]
                 }
-            async with self.pool.acquire() as c:
+            async with self.pool.acquire() as c, c.transaction():
+                await worker.fenced(c, job)
+                await self.assert_active(c, run)
                 await c.execute(
                     "UPDATE agent.agent_tool_call SET status='SUCCEEDED',result_reference=$2,result_hash=$3,completed_at=now() WHERE id=$1",
                     call["id"],
@@ -528,12 +564,19 @@ class AgentService:
                     fingerprint(result),
                 )
             return result
-        except (ValueError, TypeError, BusinessError) as exc:
-            code = exc.code if isinstance(exc, BusinessError) else "TOOL_ARGUMENT_INVALID"
+        except Exception as exc:
+            code = (
+                exc.code
+                if isinstance(exc, BusinessError)
+                else "TOOL_ARGUMENT_INVALID"
+                if isinstance(exc, (ValueError, TypeError))
+                else "TOOL_READ_FAILED"
+            )
             async with self.pool.acquire() as c:
                 await c.execute(
-                    "UPDATE agent.agent_tool_call SET status='DENIED',error_code=$2,completed_at=now() WHERE id=$1",
+                    "UPDATE agent.agent_tool_call SET status=$3,error_code=$2,completed_at=now() WHERE id=$1",
                     call["id"],
                     code,
+                    "FAILED" if code == "TOOL_READ_FAILED" else "DENIED",
                 )
             raise BusinessError(code, "工具请求不符合本次患者范围或输入合同", 403) from None

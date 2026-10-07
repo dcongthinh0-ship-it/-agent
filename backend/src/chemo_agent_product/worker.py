@@ -31,13 +31,22 @@ class Worker:
     async def claim(self):
         async with self.pool.acquire() as c, c.transaction():
             dead = await c.fetch("""UPDATE ops.job SET status='DEAD_LETTER',last_error_code='LEASE_RECOVERY_EXHAUSTED'
-              WHERE status='RUNNING' AND lease_expires_at<now() AND attempt_count>=max_attempts RETURNING prepare_run_id""")
+              WHERE status='RUNNING' AND lease_expires_at<now() AND attempt_count>=max_attempts RETURNING prepare_run_id,agent_run_id""")
             for row in dead:
                 if row["prepare_run_id"]:
                     await c.execute(
                         """UPDATE clinical.prepare_run SET status='FAILED',error_code='LEASE_RECOVERY_EXHAUSTED',completed_at=now()
                        WHERE id=$1 AND status IN ('QUEUED','RUNNING')""",
                         row["prepare_run_id"],
+                    )
+                if row["agent_run_id"]:
+                    await c.execute(
+                        "UPDATE agent.agent_run SET status='FAILED',error_code='LEASE_RECOVERY_EXHAUSTED',completed_at=now() WHERE id=$1 AND status IN ('QUEUED','RUNNING')",
+                        row["agent_run_id"],
+                    )
+                    await c.execute(
+                        "UPDATE agent.agent_tool_call SET status='FAILED',error_code='LEASE_RECOVERY_EXHAUSTED',completed_at=now() WHERE agent_run_id=$1 AND status='STARTED'",
+                        row["agent_run_id"],
                     )
             job = await c.fetchrow("""SELECT * FROM ops.job WHERE job_kind IN ('PREPARE','AGENT_RUN')
               AND ((status IN ('QUEUED','RETRY_WAIT') AND available_at<=clock_timestamp())
