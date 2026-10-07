@@ -1,0 +1,10 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>化疗智能体 · 隔离合同验收</title>
+<style>body{font:14px/1.8 system-ui;background:#f5f7f3;color:#23473d;padding:24px}h1{font-size:24px}button{padding:9px 15px;border:1px solid #abc7b7;background:white;color:#235d45;border-radius:6px;cursor:pointer;margin-right:10px}pre{background:white;border:1px solid #dbe6db;padding:18px;border-radius:8px;max-width:640px}small{color:#7f8170}</style>
+<h1>隔离合同验收</h1><p>这里模拟宿主传入上下文，只验证代码合同；不代表真实医院联通。</p>
+<small>患者为一次性测试替身。服务结束时回滚数据库事务，不写入正式库，不制作演示数据集。</small>
+<p><button onclick="enter('A')">进入验收患者 A</button><button onclick="enter('B')">切换验收患者 B</button><button onclick="stats()">刷新后台验收统计</button></p><pre id="stats">尚未进入患者。右下角挂件处于关闭状态。</pre>
+<script src="__FRONTEND__/chemo-widget.js"></script><script>
+const widget=window.createChemoWidget({serviceOrigin:'__FRONTEND__',getAccessToken:async payload=>{const r=await fetch('/acceptance/token',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});if(!r.ok)throw Error('验收授权失败');return(await r.json()).access_token},onError:error=>document.querySelector('#stats').textContent=error.message});
+async function enter(letter){await widget.updatePatient({patient_id:'CONTRACT_PATIENT_'+letter,encounter_id:'CONTRACT_ENCOUNTER_'+letter,operator_id:'CONTRACT_DOCTOR',operator_name:'合同测试医生',dept_code:'CONTRACT_ONLY',operator_dept_name:'合同验收'});await stats()}
+async function stats(){const r=await fetch('/acceptance/summary');document.querySelector('#stats').textContent=JSON.stringify(await r.json(),null,2)}
+</script></html>
