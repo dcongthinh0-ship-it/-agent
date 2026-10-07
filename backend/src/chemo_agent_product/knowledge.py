@@ -29,10 +29,32 @@ class RulePayload(Contract):
     calculation: dict = Field(default_factory=dict)
 
 
+def evidence_link_matches(link: dict, blueprint: dict, medications: list) -> bool:
+    """Validate the declared import contract against current source content.
+
+    Reading a matching DRAFT never grants publication or clinical approval.
+    Unknown contracts are not accepted as a blueprint-only shortcut.
+    """
+    contract = link.get("hash_contract_version")
+    if contract == "blueprint-and-medication-json-v1":
+        expected = fingerprint({"blueprint": blueprint, "medications": medications})
+    elif contract == "blueprint-json-v1":
+        expected = fingerprint(blueprint)
+    else:
+        return False
+    return link["regimen_content_hash"] == expected
+
+
 async def load_inputs(c, disease: str, usage_mode: str):
     rows = await c.fetch(
         """SELECT r.id AS regimen_id,r.regimen_code,r.display_name,r.cancer_category,
-      v.id AS version_id,v.status,b.document_tree FROM regimen_catalog.regimen r
+      v.id AS version_id,v.status,b.document_tree,
+      (SELECT coalesce(jsonb_agg(jsonb_build_object(
+        'name',m.source_drug_name,'dose',m.standard_dose_text,
+        'day',m.administration_day_text,'drug_concept_id',m.drug_concept_id)
+        ORDER BY m.display_order),'[]'::jsonb)
+        FROM regimen_catalog.regimen_medication_item m WHERE m.regimen_version_id=v.id
+      ) AS medication_snapshot FROM regimen_catalog.regimen r
       JOIN regimen_catalog.regimen_version v ON v.regimen_id=r.id
       JOIN regimen_catalog.form_blueprint b ON b.regimen_version_id=v.id
       WHERE r.active AND v.status<>'RETIRED' AND (r.cancer_category=$1 OR EXISTS(
@@ -128,7 +150,7 @@ async def load_inputs(c, disease: str, usage_mode: str):
             continue
         evidence_rows = await c.fetch(
             """SELECT e.*,l.id AS link_id,l.status AS link_status,
-          l.association_scope,l.regimen_content_hash,s.status AS source_status,
+          l.association_scope,l.regimen_content_hash,l.hash_contract_version,s.status AS source_status,
           s.verification_state AS source_verification,s.source_version_text
           FROM knowledge.regimen_evidence_link l JOIN knowledge.evidence_record_version e ON e.id=l.evidence_record_version_id
           LEFT JOIN knowledge.source_document_version s ON s.id=e.source_document_version_id
@@ -155,7 +177,9 @@ async def load_inputs(c, disease: str, usage_mode: str):
                     if e["association_scope"] == "REGIMEN_COMBINATION"
                     else "DRUG_ONLY",
                     status="PUBLISHED" if released else "DRAFT",
-                    applicable=e["regimen_content_hash"] == blueprint_hash,
+                    applicable=evidence_link_matches(
+                        dict(e), row["document_tree"], row["medication_snapshot"]
+                    ),
                     excerpt=e["verbatim_excerpt"],
                     source_locator=e["source_locator"],
                     source_recommendation_raw=e["source_recommendation_raw"],
