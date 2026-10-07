@@ -70,7 +70,6 @@ function App() {
   const [drawerDetail, setDrawerDetail] = useState<EvidenceDetail | null>(null)
   const [drawerError, setDrawerError] = useState<string | null>(null)
   const [mobileDetail, setMobileDetail] = useState(false)
-  const [showAllContent, setShowAllContent] = useState(false)
   const [formMode, setFormMode] = useState<'view' | 'edit' | null>(null)
 
   useEffect(() => {
@@ -126,7 +125,6 @@ function App() {
     setDetailError(null)
     setDetail(null)
     setEvidence(null)
-    setShowAllContent(false)
     const base = `/api/v1/regimens/${selected.regimen_id}/versions/${selected.version_id}`
     Promise.all([
       getJson<RegimenDetail>(base, controller.signal),
@@ -156,8 +154,6 @@ function App() {
     setDrawerItem(null)
   }
   const totalPages = Math.max(1, Math.ceil((catalog?.total ?? 0) / 20))
-  const content = detail?.content_blocks ?? []
-  const visibleContent = content.slice(0, 4)
 
   return <div className="app-shell">
     <aside className="rail" aria-label="主导航">
@@ -214,15 +210,13 @@ function App() {
               <div className="detail-actions"><button className="button-secondary editor-entry" onClick={() => setFormMode('view')}><Icon name="file" size={17} /> 查看完整方案表单</button></div>
 
               <section className="detail-section"><div className="section-title"><div><span className="section-number">01</span><h3>方案组成</h3></div><span>{detail.medications.length} 条药品行</span></div>
-                {detail.medications.length === 0 ? <p className="muted">该版本暂无结构化药品行，请查看原文内容。</p> : <div className="medication-list">{detail.medications.map((med, i) => <div className="medication-row" key={med.item_key}><span className="med-index">{String(i + 1).padStart(2, '0')}</span><div className="med-main"><strong>{med.generic_name || med.source_drug_name}</strong>{med.generic_name && med.generic_name !== med.source_drug_name && <small>来源药名：{med.source_drug_name}</small>}<span>{med.standard_dose_text || '剂量未结构化'} · {med.route_text || '途径未配置'} · {med.administration_day_text || '日期未配置'}</span></div><Badge tone={med.frequency_text ? 'quiet' : 'warning'}>{med.frequency_text || '频次未配置'}</Badge></div>)}</div>}
+                {detail.medications.length === 0 ? <p className="muted">该版本暂无结构化药品行，请查看完整方案表单。</p> : <div className="medication-list">{detail.medications.map((med, i) => <div className="medication-row" key={med.item_key}><span className="med-index">{String(i + 1).padStart(2, '0')}</span><div className="med-main"><strong>{med.generic_name || med.source_drug_name}</strong>{med.generic_name && med.generic_name !== med.source_drug_name && <small>来源药名：{med.source_drug_name}</small>}<span>{med.standard_dose_text || '剂量未结构化'} · {med.route_text || '途径未配置'} · {med.administration_day_text || '日期未配置'}</span></div><Badge tone={med.frequency_text ? 'quiet' : 'warning'}>{med.frequency_text || '频次未配置'}</Badge></div>)}</div>}
               </section>
 
               <section className="detail-section evidence-section"><div className="section-title"><div><span className="section-number">02</span><h3>关联证据</h3></div><span>{evidence?.items.length ?? 0} 条</span></div>
                 {!evidence?.items.length ? <div className="inline-empty"><Icon name="info" size={19} /><span>该固定版本暂无关联证据；不能解释为临床不适用。</span></div> : <div className="evidence-list">{evidence.items.map(item => <div className="evidence-row" key={item.association_id}><div className="evidence-source"><span className="source-mark">{item.display_source}</span><span>{item.association_scope === 'DRUG_ONLY' ? '单药依据' : '联合方案依据'}</span></div><div className="evidence-body"><div>{item.internal_level !== null && <span className="level">项目配置 Level {item.internal_level} · {item.evidence_grade ?? '等级待核'}</span>}</div><strong>{item.source_title || `${item.display_source} 来源资料`}</strong><p>{item.excerpt_preview || '原文尚未提取'}</p><button className="text-button" onClick={() => setDrawerItem(item)}>查看原文与来源 <Icon name="chevron" size={16} /></button></div></div>)}</div>}
                 {evidence?.truncated && <p className="muted">关联证据超过当前读取上限；请使用维护入口核对完整清单。</p>}
               </section>
-
-              <section className="detail-section content-section"><div className="section-title"><div><span className="section-number">03</span><h3>原记录单追溯</h3></div><span>{content.length} 个内容块</span></div><p className="muted">原记录单用于核对来源。完整表单可在上方打开；患者方案从工作台选用后进入同一表单编辑。</p><button className="text-button content-toggle" onClick={() => setShowAllContent(!showAllContent)}>{showAllContent ? '收起原文' : `展开前 4 个原文块` } <Icon name="chevron" size={16} /></button>{showAllContent && <div className="content-list">{visibleContent.map((block, i) => <article className="content-block" key={`${block.section_code}-${block.display_order}-${i}`}><span>{block.section_code} / {String(block.display_order).padStart(2, '0')}</span><h4>{block.title || '原文内容'}</h4><p>{block.raw_text || '该内容块没有可展示原文'}</p></article>)}</div>}{detail.content_truncated && <p className="muted">仅显示前 200 个内容块。</p>}</section>
             </div>}
           </section>
         </div>
