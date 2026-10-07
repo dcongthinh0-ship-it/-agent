@@ -77,15 +77,25 @@ def assess(
         )
     pathology = snapshot.facts.get("pathology")
     candidates = []
+    notices = []
     for plan in plans:
         relation = plan.applicability
         if relation.status == "RETIRED" or plan.template_status == "RETIRED":
             continue
-        if usage_mode == "CLINICAL" and (
-            relation.status != "PUBLISHED" or plan.template_status != "PUBLISHED"
-        ):
-            continue
         if disease.value not in relation.disease_codes:
+            continue
+        if (
+            usage_mode == "CLINICAL"
+            and (relation.status != "PUBLISHED" or plan.template_status != "PUBLISHED")
+        ) or (relation.relation == "RELATED_OFF_LABEL" and relation.status != "PUBLISHED"):
+            notices.append(
+                Finding(
+                    code="KNOWLEDGE_RELEASE_REQUIRED",
+                    message="相关方案或适用关系尚待核验",
+                    source_refs=[relation.ref],
+                    details={"regimen_code": plan.regimen_code},
+                )
+            )
             continue
         data = []
         if not relation.pathology_unrestricted:
@@ -190,10 +200,12 @@ def assess(
             str(c.version_id),
         )
     )
-    outcome = "CANDIDATES" if candidates else "NO_CANDIDATE"
+    outcome = "CANDIDATES" if candidates else "NEEDS_REVIEW" if notices else "NO_CANDIDATE"
     if candidates and (
         all(c.evidence_state != "VERIFIED" for c in candidates)
         or any(c.applicability.status != "PUBLISHED" for c in candidates)
     ):
         outcome = "NEEDS_REVIEW"
-    return DecisionResult(usage_mode=usage_mode, outcome_code=outcome, candidates=candidates)
+    return DecisionResult(
+        usage_mode=usage_mode, outcome_code=outcome, candidates=candidates, notices=notices
+    )

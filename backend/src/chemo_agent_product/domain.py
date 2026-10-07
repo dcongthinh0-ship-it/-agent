@@ -14,12 +14,14 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 def fingerprint(value: Any) -> str:
     if isinstance(value, BaseModel):
         value = value.model_dump(mode="json")
-    payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    payload = json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+    )
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
 class Contract(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
 
 class Reference(Contract):

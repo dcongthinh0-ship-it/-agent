@@ -93,6 +93,21 @@ def test_unrelated_disease_and_confirmed_conflicting_pathology_not_shown():
     p = plan()
     p.applicability.disease_codes = ["OTHER"]
     assert assess(snapshot(), [p], NOW).candidates == []
+
+
+def test_unreleased_relation_never_becomes_current_disease_recommendation():
+    p = plan()
+    p.applicability.status = "DRAFT"
+    p.applicability.relation = "RELATED_OFF_LABEL"
+    result = assess(snapshot(), [p], NOW)
+    assert result.candidates == []
+    assert result.outcome_code == "NEEDS_REVIEW"
+
+
+def test_unreleased_clinical_template_does_not_mean_no_appropriate_treatment():
+    p = plan()
+    p.template_status = "DRAFT"
+    assert assess(snapshot(), [p], NOW, "CLINICAL").outcome_code == "NEEDS_REVIEW"
     p.applicability.disease_codes = ["D"]
     p.applicability.pathology_codes = ["OTHER"]
     assert assess(snapshot(), [p], NOW).candidates == []
