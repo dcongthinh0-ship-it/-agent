@@ -67,7 +67,7 @@ def submit(hospital, body):
     return imported, result
 
 
-def test_persistent_idempotent_full_delivery_and_separate_signature(tmp_path):
+def test_persistent_idempotent_full_delivery_and_separate_signature(tmp_path, monkeypatch):
     path = tmp_path / "hospital.sqlite3"
     hospital = DemoHospital(path)
     body = payload()
@@ -95,6 +95,10 @@ def test_persistent_idempotent_full_delivery_and_separate_signature(tmp_path):
     result = invoke(hospital, "Q_GetRegimenArchiveStatus", query)
     assert result["signature_status"] == "SIGNED"
     assert result["responsible_doctor_id"] != result["attending_physician_id"]
+    monkeypatch.setattr("chemo_agent_product.demo_hospital.stamp", lambda: "20261009100000000")
+    repeated = invoke(DemoHospital(path), "Q_GetRegimenArchiveStatus", query)
+    assert repeated["signature_time"] == result["signature_time"]
+    assert repeated["signature_id"] == result["signature_id"]
     assert hospital.summary(query["patient_regimen_record_id"])["verification"]["fully_processed"]
     with pytest.raises(BusinessError, match="CANCEL_NOT_ALLOWED"):
         hospital.invoke(

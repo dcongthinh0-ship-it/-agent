@@ -179,7 +179,7 @@ class DemoHospital:
                     patient_regimen_record_id=record_id,
                     signature_status="SIGNED",
                     signature_id="DEMO_SIGN_" + record_id,
-                    signature_time=stamp(),
+                    signature_time=result.get("signature_time") or stamp(),
                     processed_time=stamp(),
                 )
                 result.update(DOCTORS)
