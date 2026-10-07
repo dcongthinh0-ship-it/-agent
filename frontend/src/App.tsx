@@ -170,7 +170,7 @@ function App() {
     <div className="shell-content">
       <header className="topbar">
         <div className="breadcrumb"><span>化疗智能体</span><Icon name="chevron" size={14} /><strong>{{ catalog: '方案与证据浏览', workbench: '患者工作台', evidence: '知识与证据核对', operations: '运行管理' }[activeArea]}</strong></div>
-        <div className="topbar-right"><Badge tone="quiet">{status?.demo_mode ? '虚构患者演示' : '内部测试'}</Badge><span className="topbar-separator" /><span className="system-state"><span className={`status-dot ${status?.database === 'CONNECTED' ? 'is-on' : ''}`} />方案库{status?.database === 'CONNECTED' ? '已连接' : '未连接'}</span></div>
+        <div className="topbar-right"><Badge tone="quiet">{status?.demo_mode ? '医生工作站' : '内部测试'}</Badge><span className="topbar-separator" /><span className="system-state"><span className={`status-dot ${status?.database === 'CONNECTED' ? 'is-on' : ''}`} />方案库{status?.database === 'CONNECTED' ? '已连接' : '未连接'}</span></div>
       </header>
 
       {activeArea === 'workbench' ? <ClinicalWorkbench key={`${contextId || 'no-context'}:${authGeneration}`} contextId={contextId} demoMode={Boolean(status?.demo_mode)} /> : activeArea === 'evidence' || activeArea === 'operations' ? <ManagementPage key={`${activeArea}:${authGeneration}`} area={activeArea} /> : <main>

@@ -6,62 +6,73 @@ from zoneinfo import ZoneInfo
 from chemo_agent_product.hospital import READ_OPERATIONS
 
 PATIENTS = {
-    "DEMO_P001": {
-        "name": "演示患者甲",
+    "P261008001": {
+        "name": "林雅琴",
+        "birth_date": "1974-05-12",
         "disease": "乳腺肿瘤",
         "diagnosis": "乳腺恶性肿瘤",
         "pathology": "浸润性乳腺癌",
         "purpose": "新辅助治疗",
         "height": 165,
         "weight": 60,
-        "description": "完整资料 · 对比、编辑、确认及归档",
+        "description": "乳腺恶性肿瘤 · 新辅助治疗",
         "case": "normal",
     },
-    "DEMO_P002": {
-        "name": "演示患者乙",
+    "P261008002": {
+        "name": "陈建华",
+        "birth_date": "1963-11-08",
         "disease": "消化系统肿瘤",
         "diagnosis": "胃恶性肿瘤",
         "pathology": "胃腺癌",
         "purpose": "辅助治疗",
         "height": 172,
         "weight": 68,
-        "description": "另一癌种 · 切患者隔离及历史恢复",
+        "description": "胃恶性肿瘤 · 辅助治疗",
         "case": "normal",
     },
-    "DEMO_P003": {
-        "name": "演示患者丙",
+    "P261008003": {
+        "name": "王丽芳",
+        "birth_date": "1978-03-26",
         "disease": "乳腺肿瘤",
         "diagnosis": "乳腺恶性肿瘤",
         "pathology": "浸润性乳腺癌",
         "purpose": "辅助治疗",
         "height": 160,
         "weight": None,
-        "description": "缺体重、缺ANC、检验过期 · 保留候选与提示",
+        "description": "乳腺恶性肿瘤 · 检验待更新",
         "case": "missing",
     },
-    "DEMO_P004": {
-        "name": "演示患者丁",
+    "P261008004": {
+        "name": "周晓梅",
+        "birth_date": "1968-09-17",
         "disease": "乳腺肿瘤",
         "diagnosis": "乳腺恶性肿瘤",
         "pathology": "浸润性乳腺癌",
         "purpose": "新辅助治疗",
         "height": 168,
         "weight": 64,
-        "description": "医嘱部分失败 · 回查、撤销与不可重复归档",
+        "description": "乳腺恶性肿瘤 · 医嘱待处理",
         "case": "partial",
     },
 }
 DOCTORS = {
-    "responsible_doctor_id": "DEMO_DOC01",
-    "responsible_doctor_name": "演示主管医师",
-    "attending_physician_id": "DEMO_DOC02",
-    "attending_physician_name": "演示主治医师",
-    "deputy_chief_physician_id": "DEMO_DOC03",
-    "deputy_chief_physician_name": "演示副主任医师",
+    "responsible_doctor_id": "DR1001",
+    "responsible_doctor_name": "李明远",
+    "attending_physician_id": "DR1002",
+    "attending_physician_name": "张文博",
+    "deputy_chief_physician_id": "DR1003",
+    "deputy_chief_physician_name": "陈静宜",
     "chief_physician_id": None,
     "chief_physician_name": None,
     "doctor_phone": None,
 }
+
+# Existing receipts keep their original patient identities after a presentation update.
+LEGACY_PATIENTS = {"DEMO_P" + str(i).zfill(3): info for i, info in enumerate(PATIENTS.values(), 1)}
+
+
+def encounter_matches(patient, encounter):
+    return patient in PATIENTS and encounter.startswith("IP261008" + patient[-3:])
 
 
 def stamp(value=None):
@@ -84,13 +95,13 @@ def hospital_read(name, body, dictionary):
             "encounter_id": encounter,
             "patient_name": info["name"],
             "gender": "F" if info["disease"] == "乳腺肿瘤" else "M",
-            "birth_date": "1975-06-15",
-            "medical_record_no": "DEMO_MR" + patient[-3:],
+            "birth_date": info["birth_date"],
+            "medical_record_no": "MR261008" + patient[-3:],
             "visit_type": "INPATIENT",
-            "dept_code": "DEMO_ONC",
-            "dept_name": "演示肿瘤科",
-            "ward_code": "DEMO_W01",
-            "ward_name": "演示病区",
+            "dept_code": "ONC01",
+            "dept_name": "肿瘤内科",
+            "ward_code": "ONC_W12",
+            "ward_name": "肿瘤内科十二病区",
             "bed_no": patient[-2:],
             "encounter_status": "IN_PROGRESS",
             **DOCTORS,
@@ -99,14 +110,17 @@ def hospital_read(name, body, dictionary):
         content = {
             "diagnosis_list": [
                 {
-                    "diagnosis_code": "DEMO_CANCER",
+                    "diagnosis_code": "C50.9" if info["disease"] == "乳腺肿瘤" else "C16.9",
                     "diagnosis_name": info["diagnosis"],
                     "primary_flag": True,
                 }
             ],
             "pathology_diagnosis": info["pathology"],
-            "primary_site": {"code": "DEMO_SITE", "name": info["disease"]},
-            "tnm_stage": "演示分期 III期",
+            "primary_site": {
+                "code": "BREAST" if info["disease"] == "乳腺肿瘤" else "STOMACH",
+                "name": info["disease"],
+            },
+            "tnm_stage": "III期",
             "treatment_purpose": info["purpose"],
             "treatment_line": "一线",
             "ecog_score": 1,
@@ -143,10 +157,10 @@ def hospital_read(name, body, dictionary):
         ]
         content = [
             {
-                "report_id": "DEMO_LAB" + patient[-3:],
-                "report_no": "DEMO_LAB" + patient[-3:],
+                "report_id": "LAB261008" + patient[-3:],
+                "report_no": "LAB261008" + patient[-3:],
                 "report_type": "LAB",
-                "report_name": "演示血常规与肝肾功能",
+                "report_name": "血常规与肝肾功能",
                 "collect_time": stamp(collected),
                 "report_time": stamp(collected),
                 "audit_status": "AUDITED",
@@ -156,27 +170,27 @@ def hospital_read(name, body, dictionary):
     elif name == "Q_GetClinicalRecord":
         content = [
             {
-                "document_id": "DEMO_DOC" + patient[-3:],
+                "document_id": "CR261008" + patient[-3:],
                 "document_type": "COURSE_RECORD",
-                "document_title": "演示病程",
-                "author_id": "DEMO_DOC01",
+                "document_title": "入院病程记录",
+                "author_id": "DR1001",
                 "document_time": stamp(),
                 "document_content": (
-                    f"【虚构演示】{info['diagnosis']}，{info['pathology']}，"
+                    f"{info['name']}，{info['diagnosis']}，{info['pathology']}，"
                     f"{info['purpose']}。未见明确药物过敏。"
                 ),
-                "document_summary": "完全虚构的流程演示数据",
+                "document_summary": f"{info['diagnosis']}，拟行{info['purpose']}。",
                 "sign_status": "SIGNED",
             }
         ]
     elif name == "Q_GetMedicalStaffInfo":
         content = {
-            "staff_id": "DEMO_DOC01",
-            "staff_name": "演示主管医师",
+            "staff_id": "DR1001",
+            "staff_name": "李明远",
             "staff_role_list": ["RESPONSIBLE_DOCTOR", "OPERATOR"],
-            "dept_code": "DEMO_ONC",
-            "dept_name": "演示肿瘤科",
-            "signature_id": "DEMO_SIGNATURE_RESOURCE",
+            "dept_code": "ONC01",
+            "dept_name": "肿瘤内科",
+            "signature_id": "ESIGN_DR1001",
             "signature_status": "AVAILABLE",
             "updated_time": stamp(),
         }
@@ -186,7 +200,7 @@ def hospital_read(name, body, dictionary):
         content = []  # No historical medication or operation inferred from the templates.
     return {
         "code": "0",
-        "msg": "模拟医院返回",
+        "msg": "查询成功",
         "demo": True,
         "data": {
             "content": content,
@@ -201,7 +215,7 @@ def read_profile(origin):
     profile = {
         "schema_version": "hospital-adapter.v1",
         "contract_version": "v1.0.1",
-        "hospital_code": "DEMO_HOSPITAL",
+        "hospital_code": "H1001",
         "credential_environment_variable": "CHEMO_DEMO_HOSPITAL_AUTH",
         "operations": {},
         "facts": {},
@@ -209,7 +223,7 @@ def read_profile(origin):
     }
     for name in sorted(READ_OPERATIONS):
         profile["operations"][name] = {
-            "url": f"{origin}/demo/hospital/{name}",
+            "url": f"{origin}/workstation/hospital/{name}",
             "identity_policy": "REQUEST_SCOPE",
         }
     profile["operations"]["Q_GetPatientEncounter"].update(

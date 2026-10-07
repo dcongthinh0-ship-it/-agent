@@ -4,7 +4,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-from chemo_agent_product.demo_fixtures import DOCTORS, PATIENTS, stamp
+from chemo_agent_product.demo_fixtures import DOCTORS, LEGACY_PATIENTS, PATIENTS, stamp
 from chemo_agent_product.domain import fingerprint
 from chemo_agent_product.hospital_contracts import (
     REQUEST_CONTRACTS,
@@ -37,16 +37,24 @@ class DemoHospital:
         db.row_factory = sqlite3.Row
         return db
 
+    def record_id(self, revision_id):
+        legacy_id = "DEMO_" + str(revision_id)
+        with self.connect() as db:
+            existing = db.execute("SELECT 1 FROM records WHERE id=?", (legacy_id,)).fetchone()
+        return legacy_id if existing else "REG_" + str(revision_id)
+
     def invoke(self, name, raw):
         body = (
             REQUEST_CONTRACTS[name].model_validate(raw).model_dump(mode="json", exclude_none=True)
         )
-        for key in ("patient_id", "patient_regimen_record_id"):
-            if key in body and not body[key].startswith("DEMO_"):
-                raise BusinessError("DEMO_SCOPE_ONLY", "模拟医院只接受演示记录", 403)
+        if "patient_id" in body and body["patient_id"] not in {**PATIENTS, **LEGACY_PATIENTS}:
+            raise BusinessError("WORKSTATION_SCOPE_ONLY", "患者不在当前接口授权范围内", 403)
         record_id = body.get("patient_regimen_record_id")
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT * FROM records WHERE id=?", (record_id,)).fetchone()
+            if not record_id.startswith("REG_") and not (record_id.startswith("DEMO_") and row):
+                raise BusinessError("WORKSTATION_SCOPE_ONLY", "方案记录不在当前接口授权范围内", 403)
             command = f"{name}:{body['idempotency_key']}" if body.get("idempotency_key") else None
             old = (
                 db.execute("SELECT * FROM commands WHERE key=?", (command,)).fetchone()
@@ -55,21 +63,21 @@ class DemoHospital:
             )
             if old:
                 if old["hash"] != fingerprint(body):
-                    raise BusinessError("IDEMPOTENCY_CONFLICT", "同一演示操作标识内容发生变化", 409)
+                    raise BusinessError("IDEMPOTENCY_CONFLICT", "同一操作标识的内容发生变化", 409)
                 return json.loads(old["response"])
-            row = db.execute("SELECT * FROM records WHERE id=?", (record_id,)).fetchone()
             if name == "B_ValidateChemoOrders":
                 blocked = not all(
-                    o.get("drug_code", "").startswith("DEMO_") for o in body["orders"]
+                    o.get("drug_code", "").startswith(("DRG_", "DEMO_DRUG_"))
+                    for o in body["orders"]
                 )
                 result = {
                     "validation_status": "BLOCKED" if blocked else "PASSED",
                     "validation_results": [
                         {
-                            "rule_code": "DEMO_CODES",
-                            "rule_name": "演示编码核对",
+                            "rule_code": "ORDER_CODES",
+                            "rule_name": "医嘱编码核对",
                             "validation_status": "BLOCKED" if blocked else "PASSED",
-                            "message": "仅核对演示载荷结构与编码，不代表真实临床审方",
+                            "message": "载荷结构与编码检查，不代替临床审方",
                         }
                     ],
                     "validated_time": stamp(),
@@ -87,17 +95,17 @@ class DemoHospital:
                     or validation["hash"] != fingerprint(body["orders"])
                     or json.loads(validation["response"])["validation_status"] != "PASSED"
                 ):
-                    raise BusinessError("VALIDATION_REQUIRED", "请先预校验同一份模拟医嘱", 409)
+                    raise BusinessError("VALIDATION_REQUIRED", "请先预校验同一份医嘱", 409)
                 if row:
                     raise BusinessError("ALREADY_SUBMITTED", "同一修订已交付，请回查原批次", 409)
                 result = {
                     "handover_status": "ACCEPTED",
                     "processed_time": stamp(),
-                    "hospital_business_ref": "DEMO_HIS_" + record_id,
+                    "hospital_business_ref": "HIS_" + record_id,
                     "line_results": [
                         {"line_no": o["line_no"], "status": "ACCEPTED"} for o in body["orders"]
                     ],
-                    "message": "模拟医院已受理，需回查执行结果",
+                    "message": "医嘱已受理，请回查处理结果",
                 }
                 db.execute(
                     "INSERT INTO records VALUES(?,?,?,?,NULL)",
@@ -105,11 +113,13 @@ class DemoHospital:
                 )
             elif name == "Q_GetRegimenHandoverStatus":
                 if not row:
-                    raise BusinessError("NOT_SUBMITTED", "尚未提交该演示修订", 409)
+                    raise BusinessError("NOT_SUBMITTED", "尚未提交该修订", 409)
                 result = json.loads(row["receipt"])
                 if row["status"] in ("ACCEPTED", "PROCESSING"):
                     submitted = json.loads(row["payload"])
-                    partial = PATIENTS[submitted["patient_id"]]["case"] == "partial"
+                    partial = {**PATIENTS, **LEGACY_PATIENTS}[submitted["patient_id"]][
+                        "case"
+                    ] == "partial"
                     result.update(
                         handover_status="PARTIAL_PROCESSED" if partial else "PROCESSED",
                         processed_time=stamp(),
@@ -120,9 +130,9 @@ class DemoHospital:
                             "status": "FAILED" if partial and i == 1 else "PROCESSED",
                             "his_order_no": None
                             if partial and i == 1
-                            else f"DEMO_ORDER_{record_id}_{o['line_no']}",
-                            "error_code": "DEMO_STOCK_EMPTY" if partial and i == 1 else None,
-                            "error_message": "模拟缺货，用于演示部分失败"
+                            else f"ORD_{record_id}_{o['line_no']}",
+                            "error_code": "STOCK_EMPTY" if partial and i == 1 else None,
+                            "error_message": "药品库存不足，请联系药房核对"
                             if partial and i == 1
                             else None,
                             "retryable": False if partial and i == 1 else None,
@@ -135,9 +145,7 @@ class DemoHospital:
                     )
             elif name == "B_CancelRegimenHandover":
                 if not row or row["archive"]:
-                    raise BusinessError(
-                        "CANCEL_NOT_ALLOWED", "尚未提交或已归档的演示记录不可撤销", 409
-                    )
+                    raise BusinessError("CANCEL_NOT_ALLOWED", "尚未提交或已归档的记录不可撤销", 409)
                 receipt = json.loads(row["receipt"])
                 result = {
                     "handover_status": "CANCELLED",
@@ -154,35 +162,34 @@ class DemoHospital:
                 )
             elif name == "B_ArchiveRegimenRecord":
                 if not row or row["status"] != "PROCESSED":
-                    raise BusinessError(
-                        "HANDOVER_NOT_COMPLETE", "全部模拟医嘱处理成功后才能归档", 409
-                    )
+                    raise BusinessError("HANDOVER_NOT_COMPLETE", "全部医嘱处理成功后才能归档", 409)
                 submitted = json.loads(row["payload"])
                 if fingerprint(body["orders"]) != fingerprint(submitted["orders"]):
                     raise BusinessError("ARCHIVE_CONTENT_CHANGED", "归档医嘱与提交内容不一致", 409)
                 result = {
-                    "document_id": "DEMO_EMR_" + record_id,
+                    "document_id": "EMR_" + record_id,
                     "archive_status": "ARCHIVED",
                     "processed_time": stamp(),
                     "signature_status": "UNSIGNED",
-                    "message": "模拟病历归档完成，电子签名需另行回查",
+                    "message": "病历归档完成，请另行查询签名回执",
                 }
                 db.execute(
                     "UPDATE records SET archive=? WHERE id=?", (json.dumps(result), record_id)
                 )
             else:
                 if not row or not row["archive"]:
-                    raise BusinessError("NOT_ARCHIVED", "尚未归档该演示修订", 409)
+                    raise BusinessError("NOT_ARCHIVED", "尚未归档该修订", 409)
                 result = json.loads(row["archive"])
                 result.pop("message", None)
+                if result.get("signature_status") != "SIGNED":
+                    result.update(DOCTORS)
                 result.update(
                     patient_regimen_record_id=record_id,
                     signature_status="SIGNED",
-                    signature_id="DEMO_SIGN_" + record_id,
+                    signature_id=result.get("signature_id") or "ESIGN_" + record_id,
                     signature_time=result.get("signature_time") or stamp(),
                     processed_time=stamp(),
                 )
-                result.update(DOCTORS)
                 db.execute(
                     "UPDATE records SET archive=? WHERE id=?", (json.dumps(result), record_id)
                 )

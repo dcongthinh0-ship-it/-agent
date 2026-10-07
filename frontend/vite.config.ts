@@ -7,6 +7,7 @@ export default defineConfig({
     proxy: {
       '/api': process.env.CHEMO_API_ORIGIN || 'http://127.0.0.1:8011',
       '/demo': process.env.CHEMO_API_ORIGIN || 'http://127.0.0.1:8011',
+      '/workstation': process.env.CHEMO_API_ORIGIN || 'http://127.0.0.1:8011',
     },
   },
 })

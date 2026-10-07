@@ -6,23 +6,23 @@ import pytest
 
 from chemo_agent_product.config import Settings
 from chemo_agent_product.demo import DATABASE, create_demo_app, fresh_demo_token
-from chemo_agent_product.demo_fixtures import DOCTORS, stamp
+from chemo_agent_product.demo_fixtures import DOCTORS, encounter_matches, stamp
 from chemo_agent_product.demo_hospital import DemoHospital
 from chemo_agent_product.hospital_contracts import RESPONSE_CONTRACTS
 from chemo_agent_product.security import BusinessError, Principal, verify_test_token
 
 
-def payload(patient="DEMO_P001"):
+def payload(patient="P261008001"):
     return {
-        "patient_regimen_record_id": "DEMO_RECORD_" + patient,
+        "patient_regimen_record_id": "REG_RECORD_" + patient,
         "patient_id": patient,
-        "encounter_id": "DEMO_E" + patient[-3:],
-        "doctor_id": "DEMO_DOC01",
-        "dept_code": "DEMO_ONC",
+        "encounter_id": "IP261008" + patient[-3:],
+        "doctor_id": "DR1001",
+        "dept_code": "ONC01",
         "confirmed_regimen": {
             "regimen_name": "虚构演示方案",
             "decision_status": "CONFIRMED",
-            "confirmed_by": "DEMO_DOC01",
+            "confirmed_by": "DR1001",
             "confirmed_time": "20261008090000000",
         },
         "orders": [
@@ -30,14 +30,14 @@ def payload(patient="DEMO_P001"):
                 "line_no": i,
                 "order_category": "MAIN_TREATMENT",
                 "item_type": "DRUG",
-                "drug_code": "DEMO_DRUG_" + str(i),
+                "drug_code": "DRG_" + str(i),
                 "drug_name": "演示药" + str(i),
                 "dose_value": "10",
                 "dose_unit": "mg",
                 "quantity": 1,
-                "quantity_unit": "演示包装",
-                "route_code": "DEMO_IVPB",
-                "frequency_code": "DEMO_ONCE",
+                "quantity_unit": "瓶",
+                "route_code": "IV_INFUSION",
+                "frequency_code": "ONC01E",
                 "start_day": "1",
                 "long_term_flag": "N",
             }
@@ -113,7 +113,7 @@ def test_persistent_idempotent_full_delivery_and_separate_signature(tmp_path, mo
 
 def test_partial_failure_cannot_archive_and_can_cancel(tmp_path):
     hospital = DemoHospital(tmp_path / "hospital.sqlite3")
-    body = payload("DEMO_P004")
+    body = payload("P261008004")
     submit(hospital, body)
     query = {"patient_regimen_record_id": body["patient_regimen_record_id"]}
     result = invoke(hospital, "Q_GetRegimenHandoverStatus", query)
@@ -154,6 +154,51 @@ def test_demo_never_writes_another_database(tmp_path):
             tmp_path,
             "http://127.0.0.1:5174",
         )
+
+
+def test_sample_hospital_rejects_unregistered_patient_and_foreign_record(tmp_path):
+    hospital = DemoHospital(tmp_path / "hospital.sqlite3")
+    body = payload("REAL_PATIENT_123")
+    with pytest.raises(BusinessError, match="WORKSTATION_SCOPE_ONLY"):
+        hospital.invoke("B_ValidateChemoOrders", body)
+    body = payload()
+    body["patient_regimen_record_id"] = "REAL_RECORD_123"
+    with pytest.raises(BusinessError, match="WORKSTATION_SCOPE_ONLY"):
+        hospital.invoke("B_ValidateChemoOrders", body)
+    assert encounter_matches("P261008001", "IP261008001_1791000000000")
+    assert not encounter_matches("P261008001", "IP261008002_1791000000000")
+    assert not encounter_matches("REAL_PATIENT_123", "IP261008001")
+
+
+def test_old_receipt_identity_and_signature_survive_presentation_change(tmp_path):
+    import json
+
+    hospital = DemoHospital(tmp_path / "hospital.sqlite3")
+    revision = str(uuid4())
+    record_id = "DEMO_" + revision
+    body = payload()
+    body["patient_regimen_record_id"] = record_id
+    body["patient_id"] = "DEMO_P001"
+    archive = {
+        "document_id": "DEMO_EMR_" + record_id,
+        "archive_status": "ARCHIVED",
+        "signature_status": "SIGNED",
+        "signature_id": "DEMO_SIGN_" + record_id,
+        "signature_time": "20261008090000000",
+        "processed_time": "20261008090000000",
+        "responsible_doctor_id": "DEMO_DOC01",
+    }
+    with hospital.connect() as db:
+        db.execute(
+            "INSERT INTO records VALUES(?,?,?,?,?)",
+            (record_id, json.dumps(body), "PROCESSED", "{}", json.dumps(archive)),
+        )
+    assert hospital.record_id(revision) == record_id
+    assert hospital.record_id("new-revision") == "REG_new-revision"
+    read = hospital.invoke("Q_GetRegimenArchiveStatus", {"patient_regimen_record_id": record_id})
+    assert read["signature_id"] == archive["signature_id"]
+    assert read["signature_time"] == archive["signature_time"]
+    assert read["responsible_doctor_id"] == archive["responsible_doctor_id"]
 
 
 def test_hospital_timestamp_is_shanghai_local_time():

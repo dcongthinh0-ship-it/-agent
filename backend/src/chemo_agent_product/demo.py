@@ -26,7 +26,14 @@ from pydantic import SecretStr
 from chemo_agent_product.api import create_app
 from chemo_agent_product.config import Settings
 from chemo_agent_product.database import insert
-from chemo_agent_product.demo_fixtures import DOCTORS, PATIENTS, hospital_read, read_profile, stamp
+from chemo_agent_product.demo_fixtures import (
+    DOCTORS,
+    PATIENTS,
+    encounter_matches,
+    hospital_read,
+    read_profile,
+    stamp,
+)
 from chemo_agent_product.demo_hospital import DemoHospital
 from chemo_agent_product.domain import FactRequirement, fingerprint
 from chemo_agent_product.hospital import READ_OPERATIONS
@@ -141,10 +148,11 @@ async def setup(source_env: Path, state: Path, origin: str):
         json.dumps(
             {
                 "contract_version": "v1.0.1",
-                "hospital_code": "DEMO_HOSPITAL",
+                "hospital_code": "H1001",
                 "credential_environment_variable": "CHEMO_DEMO_HOSPITAL_AUTH",
                 "operations": {
-                    name: {"url": f"{origin}/demo/hospital/{name}"} for name in REQUEST_CONTRACTS
+                    name: {"url": f"{origin}/workstation/hospital/{name}"}
+                    for name in REQUEST_CONTRACTS
                 },
             },
             ensure_ascii=False,
@@ -205,7 +213,7 @@ def create_demo_app(source, runtime, state, frontend):
                         dict(
                             created_by_principal="demo-seed",
                             hospital_key="DEMO_20261008",
-                            name="模拟医院（完全虚构）",
+                            name="肿瘤诊疗工作站",
                             contract_version="v1.0.1",
                             adapter_profile_ref="DEMO_HTTP_V1",
                             status="TEST_ONLY",
@@ -215,7 +223,7 @@ def create_demo_app(source, runtime, state, frontend):
                     "SELECT * FROM clinical.staff_reference "
                     "WHERE hospital_id=$1 AND external_staff_id=$2",
                     h["id"],
-                    "DEMO_DOC01",
+                    "DR1001",
                 )
                 if not staff:
                     staff = await insert(
@@ -224,7 +232,7 @@ def create_demo_app(source, runtime, state, frontend):
                         dict(
                             created_by_principal="demo-seed",
                             hospital_id=h["id"],
-                            external_staff_id="DEMO_DOC01",
+                            external_staff_id="DR1001",
                         ),
                     )
                 actor = Principal(
@@ -237,16 +245,16 @@ def create_demo_app(source, runtime, state, frontend):
                 dictionary = [
                     {
                         "dictionary_type": "DRUG",
-                        "item_code": "DEMO_DRUG_" + fingerprint(m["name"])[:12],
+                        "item_code": "DRG_" + fingerprint(m["name"])[:12],
                         "item_name": m["name"],
                         "common_name": m["name"],
                         "dose_unit": "mg",
-                        "order_unit": "演示包装",
+                        "order_unit": "瓶",
                         "status": "ENABLED",
-                        "route_code": "DEMO_IVPB",
-                        "frequency_code": "DEMO_ONCE",
-                        "execution_dept_code": "DEMO_ONC",
-                        "specification": "模拟规格，仅用于接口演示",
+                        "route_code": "IV_INFUSION",
+                        "frequency_code": "ONC01E",
+                        "execution_dept_code": "ONC01",
+                        "specification": "注射剂",
                     }
                     for m in await c.fetch(
                         "SELECT DISTINCT source_drug_name AS name "
@@ -264,7 +272,12 @@ def create_demo_app(source, runtime, state, frontend):
 
     app.router.lifespan_context = lifespan
 
-    @app.get("/demo/host", response_class=HTMLResponse)
+    @app.get("/workstation/runtime", include_in_schema=False)
+    async def runtime_identity():
+        return {"workspace": str(Path(__file__).resolve().parents[3]), "database": DATABASE}
+
+    @app.get("/workstation", response_class=HTMLResponse)
+    @app.get("/demo/host", response_class=HTMLResponse, include_in_schema=False)
     async def host():
         return (
             Path(__file__)
@@ -274,49 +287,52 @@ def create_demo_app(source, runtime, state, frontend):
             .replace("__PATIENTS__", json.dumps(PATIENTS, ensure_ascii=False))
         )
 
-    @app.post("/demo/token")
+    @app.post("/workstation/token")
+    @app.post("/demo/token", include_in_schema=False)
     async def token(request: Request):
         body = await request.json()
-        if body.get("patient_id") not in PATIENTS or body.get("operator_id") != "DEMO_DOC01":
-            raise BusinessError("DEMO_SCOPE_ONLY", "仅接受演示病例和演示医师", 403)
+        if body.get("patient_id") not in PATIENTS or body.get("operator_id") != "DR1001":
+            raise BusinessError("WORKSTATION_SCOPE_ONLY", "当前患者或医师不在授权范围内", 403)
         return {"access_token": fresh_demo_token(actor, runtime["launch_signing_key"])}
 
-    @app.post("/demo/hospital/{name}")
+    @app.post("/workstation/hospital/{name}")
+    @app.post("/demo/hospital/{name}", include_in_schema=False)
     async def simulated_hospital(name: str, request: Request):
         if not secrets.compare_digest(
             request.headers.get("Authorization", ""), runtime["hospital_auth"]
         ):
-            raise BusinessError("DEMO_AUTH_REQUIRED", "模拟医院认证未通过", 401)
+            raise BusinessError("WORKSTATION_AUTH_REQUIRED", "院方接口认证未通过", 401)
         body = await request.json()
         if name in READ_OPERATIONS:
             pid, eid = body.get("patient_id"), body.get("encounter_id", "")
-            if pid not in PATIENTS or not eid.startswith("DEMO_E" + pid[-3:]):
-                raise BusinessError("DEMO_PATIENT_MISMATCH", "模拟医院患者与就诊不一致", 403)
+            if not encounter_matches(pid, eid):
+                raise BusinessError("WORKSTATION_PATIENT_MISMATCH", "患者与就诊不一致", 403)
             return hospital_read(name, body, dictionary)
         if name not in REQUEST_CONTRACTS:
-            raise BusinessError("UNKNOWN_OPERATION", "未定义的模拟院方操作", 404)
+            raise BusinessError("UNKNOWN_OPERATION", "未定义的院方接口操作", 404)
         return {
             "code": "0",
-            "msg": "模拟医院处理结果",
+            "msg": "接口处理完成",
             "demo": True,
             "data": {"content": hospital.invoke(name, body)},
         }
 
     async def session(ctx, iid, p):
         if p.hospital_id != actor.hospital_id:
-            raise BusinessError("DEMO_SCOPE_ONLY", "只允许演示医院上下文", 403)
+            raise BusinessError("WORKSTATION_SCOPE_ONLY", "请使用当前工作站的患者上下文", 403)
         w = app.state.workflow
         value = await w.read_instance(p, ctx, iid)
         if value["read_only"]:
-            raise BusinessError("DEMO_CONTEXT_STALE", "请使用本次患者快照下的方案", 409)
+            raise BusinessError("WORKSTATION_CONTEXT_STALE", "请使用本次患者快照下的方案", 409)
         return value
 
-    @app.get("/demo/contexts/{ctx}/instances/{iid}/example")
+    @app.get("/workstation/contexts/{ctx}/instances/{iid}/example")
+    @app.get("/demo/contexts/{ctx}/instances/{iid}/example", include_in_schema=False)
     async def example(ctx: UUID, iid: UUID, p: PrincipalDep):
         value = await session(ctx, iid, p)
         if value["template"]["regimen_code"] != "WFAH-BC-001":
             raise BusinessError(
-                "DEMO_EXAMPLE_NOT_DEFINED", "本例示范填写值仅适用于BC-001，请自行填写其他方案", 422
+                "PRESET_NOT_DEFINED", "BC-001已配置预设填写值，请自行填写其他方案", 422
             )
         return {
             "demo": True,
@@ -330,7 +346,7 @@ def create_demo_app(source, runtime, state, frontend):
                 m["item_key"]: {
                     "actual_dose_text": DOSES[m["source_drug_name"]],
                     "administration_day_text": "第1天",
-                    "instructions": "虚构演示医生填写值，不是临床剂量建议",
+                    "instructions": "给药前核对剂量、治疗日期与给药安排。",
                 }
                 for m in value["template"]["medications"]
             },
@@ -342,7 +358,9 @@ def create_demo_app(source, runtime, state, frontend):
             raise BusinessError("CONFIRMATION_REQUIRED", "先保存并单独确认当前修订", 409)
         if value["template"]["regimen_code"] != "WFAH-BC-001":
             raise BusinessError(
-                "DEMO_MAPPING_NOT_DEFINED", "当前示范交付仅配置BC-001的四条主治疗药", 422
+                "ORDER_MAPPING_NOT_DEFINED",
+                "当前已配置BC-001的四条主治疗药，其他医嘱映射待配置",
+                422,
             )
         fields, orders = value["field_values"], []
         for i, med in enumerate(value["template"]["medications"], 1):
@@ -356,8 +374,8 @@ def create_demo_app(source, runtime, state, frontend):
                 or edit.get("administration_day_text") not in {"第1天", "D1", "1"}
             ):
                 raise BusinessError(
-                    "DEMO_ORDER_INCOMPLETE",
-                    "示范交付要求各药有正数mg剂量及第1天，复杂日程需另行配置",
+                    "ORDER_INCOMPLETE",
+                    "当前医嘱映射要求正数mg剂量及第1天，复杂日程需另行配置",
                     422,
                 )
             orders.append(
@@ -365,18 +383,18 @@ def create_demo_app(source, runtime, state, frontend):
                     "line_no": i,
                     "order_category": "MAIN_TREATMENT",
                     "item_type": "DRUG",
-                    "drug_code": "DEMO_DRUG_" + fingerprint(med["source_drug_name"])[:12],
+                    "drug_code": "DRG_" + fingerprint(med["source_drug_name"])[:12],
                     "drug_name": med["source_drug_name"],
                     "dose_value": dose[1],
                     "dose_unit": "mg",
                     "quantity": 1,
-                    "quantity_unit": "演示包装",
-                    "route_code": "DEMO_IVPB",
-                    "frequency_code": "DEMO_ONCE",
+                    "quantity_unit": "瓶",
+                    "route_code": "IV_INFUSION",
+                    "frequency_code": "ONC01E",
                     "start_day": "1",
                     "long_term_flag": "N",
-                    "execution_dept_code": "DEMO_ONC",
-                    "remark": "仅模拟主治疗药接口，数量/编码为虚构演示配置",
+                    "execution_dept_code": "ONC01",
+                    "remark": "本批次包含主要治疗医嘱。",
                     "special_instructions": edit.get("instructions") or None,
                 }
             )
@@ -393,13 +411,13 @@ def create_demo_app(source, runtime, state, frontend):
             raise BusinessError("TREATMENT_DATE_REQUIRED", "请填写治疗日期后另存并确认修订", 422)
         # Stable times and keys ensure repeated clicks reuse the original hospital batch.
         base = {
-            "patient_regimen_record_id": "DEMO_" + value["revision_id"],
+            "patient_regimen_record_id": hospital.record_id(value["revision_id"]),
             "patient_id": value["snapshot"]["patient_ref"],
             "encounter_id": value["snapshot"]["encounter_ref"],
             "confirmed_regimen": {
                 "regimen_name": value["template"]["display_name"],
                 "decision_status": "CONFIRMED",
-                "confirmed_by": "DEMO_DOC01",
+                "confirmed_by": "DR1001",
                 "confirmed_time": stamp(confirmed),
                 "regimen_code": "WFAH-BC-001",
                 "regimen_cycle_no": fields.get("current_cycle"),
@@ -409,16 +427,18 @@ def create_demo_app(source, runtime, state, frontend):
         }
         return value, base
 
-    @app.get("/demo/contexts/{ctx}/instances/{iid}/delivery")
+    @app.get("/workstation/contexts/{ctx}/instances/{iid}/delivery")
+    @app.get("/demo/contexts/{ctx}/instances/{iid}/delivery", include_in_schema=False)
     async def delivery_state(ctx: UUID, iid: UUID, p: PrincipalDep):
         value = await session(ctx, iid, p)
         return {
             "demo": True,
-            "scope": "BC-001四条主治疗药示范交付",
-            **hospital.summary("DEMO_" + str(value["revision_id"])),
+            "scope": "BC-001四条主治疗药",
+            **hospital.summary(hospital.record_id(value["revision_id"])),
         }
 
-    @app.post("/demo/contexts/{ctx}/instances/{iid}/delivery/{action}")
+    @app.post("/workstation/contexts/{ctx}/instances/{iid}/delivery/{action}")
+    @app.post("/demo/contexts/{ctx}/instances/{iid}/delivery/{action}", include_in_schema=False)
     async def deliver(ctx: UUID, iid: UUID, action: str, p: PrincipalDep):
         value, base = await payload(ctx, iid, p)
         rid = base["patient_regimen_record_id"]
@@ -431,14 +451,14 @@ def create_demo_app(source, runtime, state, frontend):
             "signature": "Q_GetRegimenArchiveStatus",
         }
         if action not in names:
-            raise BusinessError("UNKNOWN_ACTION", "未定义的模拟交付动作", 404)
+            raise BusinessError("UNKNOWN_ACTION", "未定义的交付操作", 404)
         if action == "validate":
-            body = {**base, "doctor_id": "DEMO_DOC01", "dept_code": "DEMO_ONC"}
+            body = {**base, "doctor_id": "DR1001", "dept_code": "ONC01"}
         elif action == "import":
             body = {
                 **base,
-                "doctor_id": "DEMO_DOC01",
-                "dept_code": "DEMO_ONC",
+                "doctor_id": "DR1001",
+                "dept_code": "ONC01",
                 "idempotency_key": rid + ":import",
                 "visit_type": "INPATIENT",
                 "regimen_version": str(value["template"]["version_id"]),
@@ -452,13 +472,13 @@ def create_demo_app(source, runtime, state, frontend):
             body = {
                 "patient_regimen_record_id": rid,
                 "idempotency_key": rid + ":cancel",
-                "cancel_reason": "演示撤销",
+                "cancel_reason": "医生撤销本批次医嘱",
             }
         else:
             body = {
                 **base,
                 "idempotency_key": rid + ":archive",
-                "document_type": "DEMO_CHEMO_REGIMEN",
+                "document_type": "CHEMO_REGIMEN",
                 **DOCTORS,
             }
 
@@ -485,7 +505,7 @@ def create_demo_app(source, runtime, state, frontend):
                         },
                     )
 
-        result, _ = await delivery.invoke(names[action], body, "DEMO_DOC01", observer=observer)
+        result, _ = await delivery.invoke(names[action], body, "DR1001", observer=observer)
         return {
             "demo": True,
             "operation": names[action],
@@ -503,7 +523,7 @@ async def run(args):
     app = create_demo_app(source, runtime, state, args.frontend)
     print(
         {
-            "demo_host": origin + "/demo/host",
+            "workstation_url": origin + "/workstation",
             "database": DATABASE,
             "synthetic_patients": len(PATIENTS),
         },

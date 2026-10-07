@@ -26,6 +26,14 @@ def status(url):
         return json.load(response)
 
 
+def same_workspace(origin):
+    try:
+        runtime = status(origin + "/workstation/runtime")
+        return runtime == {"workspace": str(ROOT), "database": "chemo_demo_test_20261008"}
+    except (OSError, ValueError):
+        return False
+
+
 def stop(*_args):
     for process in processes:
         if process.poll() is None:
@@ -47,8 +55,8 @@ def launch(args, folder, filename, env=None):
 def main():
     STATE.mkdir(parents=True, exist_ok=True)
     if occupied(8012):
-        if not status("http://127.0.0.1:8012/api/v1/status").get("demo_mode"):
-            raise RuntimeError("8012已被其他服务占用，请检查后重试；本脚本不会停止它。")
+        if not same_workspace("http://127.0.0.1:8012"):
+            raise RuntimeError("8012已被其他工作目录的服务占用，请检查后重试；本脚本不会停止它。")
     else:
         launch(
             [
@@ -64,7 +72,7 @@ def main():
             "backend.log",
         )
     if occupied(5174):
-        if not status("http://127.0.0.1:5174/api/v1/status").get("demo_mode"):
+        if not same_workspace("http://127.0.0.1:5174"):
             raise RuntimeError("5174已被其他页面占用，请检查后重试；本脚本不会停止它。")
     else:
         launch(
@@ -76,20 +84,20 @@ def main():
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
         if any(p.poll() is not None for p in processes):
-            raise RuntimeError(f"演示服务启动失败，请查看 {STATE} 中的日志。")
+            raise RuntimeError(f"工作站启动失败，请查看 {STATE} 中的日志。")
         try:
-            if status("http://127.0.0.1:5174/api/v1/status").get("demo_mode"):
-                print("演示已启动：http://127.0.0.1:8012/demo/host", flush=True)
-                print("关闭此终端只停止本次脚本启动的服务，演示数据仍保留。", flush=True)
+            if same_workspace("http://127.0.0.1:5174"):
+                print("工作站已启动：http://127.0.0.1:8012/workstation", flush=True)
+                print("关闭此终端只停止本次脚本启动的服务，已有数据仍保留。", flush=True)
                 if "--no-open" not in sys.argv:
-                    subprocess.run(["open", "http://127.0.0.1:8012/demo/host"], check=False)
+                    subprocess.run(["open", "http://127.0.0.1:8012/workstation"], check=False)
                 while processes and all(p.poll() is None for p in processes):
                     time.sleep(1)
                 return 0
         except (OSError, ValueError):
             pass
         time.sleep(0.5)
-    raise RuntimeError(f"演示启动超过60秒，请查看 {STATE} 中的日志。")
+    raise RuntimeError(f"工作站启动超过60秒，请查看 {STATE} 中的日志。")
 
 
 if __name__ == "__main__":
