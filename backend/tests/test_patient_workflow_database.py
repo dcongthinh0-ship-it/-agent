@@ -2,7 +2,7 @@
 
 import os
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import asyncpg
@@ -306,6 +306,174 @@ async def test_expired_lease_is_recovered_and_old_owner_cannot_finish(environmen
             await worker1.fenced(c, first)
     await worker2.prepare(second)
     assert await c.fetchval("SELECT status FROM ops.job WHERE id=$1", second["id"]) == "SUCCEEDED"
+
+
+@pytest.mark.asyncio
+async def test_queue_and_lease_use_database_clock_even_when_application_clock_is_ahead(
+    environment, monkeypatch
+):
+    class AheadClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime.now(tz) + timedelta(hours=1)
+
+    monkeypatch.setattr("chemo_agent_product.workflow.datetime", AheadClock)
+    monkeypatch.setattr("chemo_agent_product.worker.datetime", AheadClock)
+    c, w, p, pool, settings = environment
+    await w.launch(p, launch_input(), "clock-skew-launch")
+    row = await c.fetchrow("SELECT * FROM ops.job WHERE hospital_id=$1", p.hospital_id)
+    server = await c.fetchval("SELECT clock_timestamp()")
+    assert row["available_at"] <= server
+    worker = Worker(pool, settings, ReaderDouble())
+    claimed = await worker.claim()
+    assert claimed and claimed["lease_expires_at"] < server + timedelta(minutes=10)
+    async with c.transaction():
+        await worker.fenced(c, claimed)
+
+
+@pytest.mark.asyncio
+async def test_scoped_http_endpoints_management_permissions_and_no_fake_his_receipt(environment):
+    from httpx import ASGITransport, AsyncClient
+
+    from chemo_agent_product.api import create_app
+    from chemo_agent_product.security import issue_test_token
+
+    c, w, p, pool, settings = environment
+    result = await w.launch(p, launch_input(), "http-launch")
+    context_id = UUID(result["context_id"])
+    await Worker(pool, settings, ReaderDouble()).once()
+    read = await w.read_context(p, context_id)
+    selected = await w.select(p, context_id, read["candidates"][0]["candidate_id"], "http-select")
+    instance_id = UUID(selected["instance_id"])
+    saved = await w.save(p, context_id, instance_id, SaveInput(expected_row_version=1), "http-save")
+    key = "contract-only-signing-key-of-at-least-32-chars"
+    app = create_app(
+        settings.model_copy(update={"database_url": None, "launch_signing_key": SecretStr(key)})
+    )
+    async with app.router.lifespan_context(app):
+        app.state.workflow = w
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://contract"
+        ) as client:
+            assert (await client.get(f"/api/v1/contexts/{context_id}")).status_code == 401
+            headers = {"Authorization": f"Bearer {issue_test_token(p, key)}"}
+            assert (
+                await client.get(f"/api/v1/contexts/{context_id}", headers=headers)
+            ).status_code == 200
+            before = await c.fetchval("SELECT count(*) FROM integration.hospital_order_validation")
+            response = await client.get(
+                f"/api/v1/contexts/{context_id}/instances/{instance_id}/hospital-readiness",
+                headers=headers,
+            )
+            assert response.status_code == 200 and response.json()["state"] == "BLOCKED"
+            assert response.json()["hospital_call_started"] is False
+            assert before == await c.fetchval(
+                "SELECT count(*) FROM integration.hospital_order_validation"
+            )
+            assert (
+                await client.get("/api/v1/operations/overview", headers=headers)
+            ).status_code == 403
+            manager = p.model_copy(update={"roles": ["OPERATOR", "KNOWLEDGE_REVIEWER"]})
+            admin = {"Authorization": f"Bearer {issue_test_token(manager, key)}"}
+            assert (
+                await client.get("/api/v1/operations/overview", headers=admin)
+            ).status_code == 200
+            knowledge = await client.get("/api/v1/knowledge/overview", headers=admin)
+            assert knowledge.status_code == 200
+            assert sum(item["count"] for item in knowledge.json()["evidence"]) == 153
+            history = await client.get(
+                f"/api/v1/contexts/{context_id}/instances/{instance_id}/revisions/{saved['revision_id']}",
+                headers=headers,
+            )
+            assert (
+                history.status_code == 200
+                and history.json()["revision_hash"] == saved["revision_hash"]
+            )
+
+
+@pytest.mark.asyncio
+async def test_configured_main_agent_is_queued_before_widget_open_in_same_transaction(environment):
+    c, w, p, pool, settings = environment
+    configured = settings.model_copy(
+        update={
+            "model_enabled": True,
+            "model_api_key": SecretStr("CONTRACT_ONLY_NOT_A_REAL_KEY"),
+            "model_name": "contract-model",
+        }
+    )
+    result = await w.launch(p, launch_input(), "auto-agent-launch")
+    await Worker(pool, configured, ReaderDouble()).once()
+    rows = await c.fetch(
+        "SELECT r.status FROM agent.agent_run r "
+        "JOIN clinical.decision_run d ON d.id=r.decision_run_id WHERE d.launch_context_id=$1",
+        UUID(result["context_id"]),
+    )
+    assert len(rows) == 1 and rows[0]["status"] == "QUEUED"
+    assert await c.fetchval("SELECT count(*) FROM agent.agent_tool_call") == 0
+
+
+@pytest.mark.asyncio
+async def test_hospital_call_is_linked_to_raw_source_and_snapshot_without_logging_secret(
+    environment, tmp_path, monkeypatch
+):
+    from test_hospital_adapter import configure
+
+    c, w, p, pool, settings = environment
+    launched = await w.launch(p, launch_input(), "logged-read")
+    await Worker(pool, settings, configure(tmp_path, monkeypatch)).once()
+    result = await w.read_context(p, UUID(launched["context_id"]))
+    assert result["prepare_status"] == "SUCCEEDED"
+    attempt = await c.fetchrow(
+        "SELECT * FROM integration.hospital_call_attempt WHERE hospital_id=$1", p.hospital_id
+    )
+    assert attempt["transport_outcome"] == "RESPONDED" and attempt["business_code"] == "0"
+    assert attempt["response_hash"] and attempt["request_hash"]
+    assert not any("CONTRACT_ONLY" in str(value) for value in attempt.values())
+    assert (
+        await c.fetchval(
+            "SELECT count(*) FROM clinical.source_record WHERE request_attempt_id=$1", attempt["id"]
+        )
+        == 1
+    )
+
+
+@pytest.mark.asyncio
+async def test_reopen_same_encounter_recovers_saved_history_but_cannot_mix_snapshots(environment):
+    c, w, p, pool, settings = environment
+    launch = await w.launch(p, launch_input(), "reopen-first")
+    first = UUID(launch["context_id"])
+    worker = Worker(pool, settings, ReaderDouble())
+    await worker.once()
+    read = await w.read_context(p, first)
+    selected = await w.select(p, first, read["candidates"][0]["candidate_id"], "reopen-select")
+    instance_id = UUID(selected["instance_id"])
+    saved = await w.save(p, first, instance_id, SaveInput(expected_row_version=1), "reopen-save")
+    later = UUID((await w.launch(p, launch_input(), "reopen-new-context"))["context_id"])
+    await worker.once()
+    reopened = await w.read_context(p, later)
+    assert any(item["id"] == instance_id and item["read_only"] for item in reopened["instances"])
+    historical = await w.read_instance(p, later, instance_id)
+    assert historical["read_only"] and historical["revision_hash"] == saved["revision_hash"]
+    assert historical["snapshot"] != reopened["snapshot"]
+    with pytest.raises(BusinessError, match="SNAPSHOT_CHANGED"):
+        await w.save(
+            p,
+            later,
+            instance_id,
+            SaveInput(
+                expected_row_version=2,
+                base_revision_id=UUID(saved["revision_id"]),
+                change_reason="合同测试拒绝混用",
+            ),
+            "reopen-illegal-save",
+        )
+    other = UUID(
+        (await w.launch(p, launch_input("OTHER_PATIENT", "OTHER_ENCOUNTER"), "reopen-other"))[
+            "context_id"
+        ]
+    )
+    with pytest.raises(BusinessError, match="INSTANCE_FORBIDDEN"):
+        await w.read_instance(p, other, instance_id)
 
 
 class ContractAgentAdapter:

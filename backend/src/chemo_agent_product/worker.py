@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime, timedelta
-from uuid import uuid4
+from datetime import UTC, datetime
+from uuid import UUID, uuid4
 
 import asyncpg
 import httpx
@@ -31,7 +31,7 @@ class Worker:
     async def claim(self):
         async with self.pool.acquire() as c, c.transaction():
             dead = await c.fetch("""UPDATE ops.job SET status='DEAD_LETTER',last_error_code='LEASE_RECOVERY_EXHAUSTED'
-              WHERE status='RUNNING' AND lease_expires_at<now() AND attempt_count>=max_attempts RETURNING prepare_run_id,agent_run_id""")
+              WHERE status='RUNNING' AND lease_expires_at<clock_timestamp() AND attempt_count>=max_attempts RETURNING prepare_run_id,agent_run_id""")
             for row in dead:
                 if row["prepare_run_id"]:
                     await c.execute(
@@ -56,22 +56,27 @@ class Worker:
                 return None
             return await c.fetchrow(
                 """UPDATE ops.job SET status='RUNNING',attempt_count=attempt_count+1,
-              lease_owner=$2,lease_token=$3,lease_epoch=lease_epoch+1,lease_expires_at=$4,heartbeat_at=now()
+              lease_owner=$2,lease_token=$3,lease_epoch=lease_epoch+1,
+              lease_expires_at=clock_timestamp()+make_interval(secs=>$4),heartbeat_at=clock_timestamp()
               WHERE id=$1 RETURNING *""",
                 job["id"],
                 self.owner,
                 uuid4(),
-                datetime.now(UTC) + timedelta(seconds=self.settings.worker_lease_seconds),
+                self.settings.worker_lease_seconds,
             )
 
     async def fenced(self, c, job):
-        current = await c.fetchrow("SELECT * FROM ops.job WHERE id=$1 FOR UPDATE", job["id"])
+        current = await c.fetchrow(
+            "SELECT *,lease_expires_at>clock_timestamp() AS lease_is_live "
+            "FROM ops.job WHERE id=$1 FOR UPDATE",
+            job["id"],
+        )
         if (
             not current
             or current["status"] != "RUNNING"
             or current["lease_token"] != job["lease_token"]
             or current["lease_epoch"] != job["lease_epoch"]
-            or current["lease_expires_at"] <= datetime.now(UTC)
+            or not current["lease_is_live"]
         ):
             raise BusinessError("JOB_LEASE_LOST", "任务租约已交给其他执行者", 409)
 
@@ -80,13 +85,14 @@ class Worker:
             await asyncio.sleep(max(5, self.settings.worker_lease_seconds / 3))
             async with self.pool.acquire() as c:
                 await c.execute(
-                    """UPDATE ops.job SET heartbeat_at=now(),lease_expires_at=$4
+                    """UPDATE ops.job SET heartbeat_at=clock_timestamp(),
+                  lease_expires_at=clock_timestamp()+make_interval(secs=>$4)
                   WHERE id=$1 AND lease_token=$2 AND lease_epoch=$3 AND status='RUNNING'
-                  AND lease_expires_at>now()""",
+                  AND lease_expires_at>clock_timestamp()""",
                     job["id"],
                     job["lease_token"],
                     job["lease_epoch"],
-                    datetime.now(UTC) + timedelta(seconds=self.settings.worker_lease_seconds),
+                    self.settings.worker_lease_seconds,
                 )
 
     async def prepare(self, job):
@@ -94,7 +100,7 @@ class Worker:
             await self.fenced(c, job)
             run = await c.fetchrow(
                 """SELECT pr.*,lc.hospital_id,lc.patient_reference_id,lc.encounter_reference_id,
-              lc.context_state,lc.expires_at,lc.active_generation,pat.external_patient_id,enc.external_encounter_id,
+              lc.context_state,lc.expires_at,lc.active_generation,lc.operator_staff_id,pat.external_patient_id,enc.external_encounter_id,
               staff.external_staff_id FROM clinical.prepare_run pr
               JOIN clinical.launch_context lc ON lc.id=pr.launch_context_id
               JOIN clinical.patient_reference pat ON pat.id=lc.patient_reference_id
@@ -118,8 +124,52 @@ class Worker:
                 run["id"],
             )
         started = datetime.now(UTC)
-        sources = await self.reader.fetch(
-            run["external_patient_id"], run["external_encounter_id"], run["external_staff_id"]
+
+        async def observe(event):
+            async with self.pool.acquire() as c, c.transaction():
+                if event["phase"] == "STARTED":
+                    await self.fenced(c, job)
+                    attempt = await insert(
+                        c,
+                        "integration.hospital_call_attempt",
+                        dict(
+                            created_by_principal=run["created_by_principal"],
+                            hospital_id=run["hospital_id"],
+                            prepare_run_id=run["id"],
+                            call_group_id=UUID(event["call_group_id"]),
+                            attempt_no=event["attempt_no"],
+                            operation_name=event["operation_name"],
+                            request_id=event["request_id"],
+                            contract_version=event["contract_version"],
+                            started_at=event["started_at"],
+                            request_hash=event["request_hash"],
+                            transport_outcome="STARTED",
+                        ),
+                    )
+                    return attempt["id"]
+                # Late network completion is still audited, but never changes a snapshot.
+                await c.execute(
+                    """UPDATE integration.hospital_call_attempt
+                    SET completed_at=$4,transport_outcome=$5,http_status=$6,business_code=$7,
+                    response_hash=$8,safe_error_summary=$9
+                    WHERE request_id=$1 AND prepare_run_id=$2 AND hospital_id=$3""",
+                    event["request_id"],
+                    run["id"],
+                    run["hospital_id"],
+                    event["completed_at"],
+                    event["transport_outcome"],
+                    event.get("http_status"),
+                    event.get("business_code"),
+                    event.get("response_hash"),
+                    event.get("safe_error_summary"),
+                )
+                return None
+
+        args = (run["external_patient_id"], run["external_encounter_id"], run["external_staff_id"])
+        sources = (
+            await self.reader.fetch(*args, observer=observe)
+            if isinstance(self.reader, ConfiguredHospitalReader)
+            else await self.reader.fetch(*args)
         )
         snapshot = self.reader.normalize(
             sources, run["external_patient_id"], run["external_encounter_id"]
@@ -155,8 +205,8 @@ class Worker:
                 source_row = await c.fetchrow(
                     """INSERT INTO clinical.source_record
                   (created_by_principal,hospital_id,patient_reference_id,source_operation,source_system,source_record_key,
-                   received_at,identity_verification,record_payload,payload_schema_version,content_hash,source_encounter_external_id)
-                  VALUES($1,$2,$3,$4,'HOSPITAL_ADAPTER',$5,$6,$7,$8,'hospital-response.v1',$9,$10)
+                   received_at,identity_verification,record_payload,payload_schema_version,content_hash,source_encounter_external_id,request_attempt_id)
+                  VALUES($1,$2,$3,$4,'HOSPITAL_ADAPTER',$5,$6,$7,$8,'hospital-response.v1',$9,$10,$11)
                   ON CONFLICT(hospital_id,patient_reference_id,source_operation,source_record_key,content_hash)
                   DO NOTHING RETURNING id""",
                     run["created_by_principal"],
@@ -169,6 +219,7 @@ class Worker:
                     source.payload,
                     source.content_hash,
                     run["external_encounter_id"],
+                    source.request_attempt_id,
                 )
                 source_id = (
                     source_row["id"]
@@ -331,6 +382,28 @@ class Worker:
                 run["id"],
                 {"source_count": len(sources), "snapshot_id": str(saved["id"])},
             )
+            if self.settings.model_configured:
+                from chemo_agent_product.agents import AgentService
+                from chemo_agent_product.patient_contracts import AgentRequest
+                from chemo_agent_product.security import Principal
+                from chemo_agent_product.workflow import Workflow
+
+                actor = Principal(
+                    subject=run["created_by_principal"],
+                    hospital_id=run["hospital_id"],
+                    staff_id=run["operator_staff_id"],
+                    roles=["DOCTOR"],
+                    expires_at=int(run["expires_at"].timestamp()),
+                )
+                # Queue atomically with prepared results. Opening the widget is
+                # not the trigger, and a worker restart cannot lose the request.
+                await AgentService(Workflow(self.pool, self.settings)).enqueue_at(
+                    c,
+                    actor,
+                    run["launch_context_id"],
+                    AgentRequest(kind="RECOMMENDATION"),
+                    f"auto-main:{run['id']}",
+                )
             await c.execute(
                 "UPDATE ops.job SET status='SUCCEEDED',lease_expires_at=NULL WHERE id=$1", job["id"]
             )
@@ -367,11 +440,12 @@ class Worker:
                 except BusinessError:
                     return True
                 await c.execute(
-                    "UPDATE ops.job SET status=$2,last_error_code=$3,available_at=$4,lease_expires_at=NULL WHERE id=$1",
+                    "UPDATE ops.job SET status=$2,last_error_code=$3,"
+                    "available_at=clock_timestamp()+make_interval(secs=>$4),lease_expires_at=NULL WHERE id=$1",
                     job["id"],
                     "RETRY_WAIT" if retry else "FAILED",
                     code,
-                    datetime.now(UTC) + timedelta(seconds=2 ** job["attempt_count"]),
+                    2 ** job["attempt_count"],
                 )
                 if job["prepare_run_id"]:
                     await c.execute(

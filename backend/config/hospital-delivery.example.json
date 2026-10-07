@@ -1,0 +1,38 @@
+{
+  "contract_version": "v1.0.1",
+  "credential_environment_variable": "CHEMO_PRODUCT_HOSPITAL_AUTHORIZATION",
+  "hospital_code": null,
+  "timeout_seconds": 15,
+  "operations": {
+    "B_ValidateChemoOrders": {
+      "url": null,
+      "method": "POST",
+      "response_pointer": "/data/content"
+    },
+    "B_ImportChemoOrders": {
+      "url": null,
+      "method": "POST",
+      "response_pointer": "/data/content"
+    },
+    "Q_GetRegimenHandoverStatus": {
+      "url": null,
+      "method": "POST",
+      "response_pointer": "/data/content"
+    },
+    "B_CancelRegimenHandover": {
+      "url": null,
+      "method": "POST",
+      "response_pointer": "/data/content"
+    },
+    "B_ArchiveRegimenRecord": {
+      "url": null,
+      "method": "POST",
+      "response_pointer": "/data/content"
+    },
+    "Q_GetRegimenArchiveStatus": {
+      "url": null,
+      "method": "POST",
+      "response_pointer": "/data/content"
+    }
+  }
+}

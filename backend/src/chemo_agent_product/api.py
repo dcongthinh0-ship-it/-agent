@@ -24,6 +24,7 @@ from chemo_agent_product.contracts import (
     RegimenPage,
 )
 from chemo_agent_product.database import open_pool
+from chemo_agent_product.management_api import router as management_router
 from chemo_agent_product.patient_api import principal as authenticated_principal
 from chemo_agent_product.patient_api import router as patient_router
 from chemo_agent_product.runtime import ContextReader, PostgresTestContextReader
@@ -230,6 +231,7 @@ def create_app(
         return evidence or error(404, "EVIDENCE_NOT_FOUND", "未找到该证据版本")
 
     app.include_router(patient_router)
+    app.include_router(management_router)
     return app
 
 

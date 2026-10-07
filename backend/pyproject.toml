@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "chemo-agent-product-api"
 version = "0.1.0"
-description = "化疗智能体产品只读 API 首批"
+description = "化疗智能体患者流程、方案表单与受控 Agent 服务"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "asyncpg>=0.30,<1",

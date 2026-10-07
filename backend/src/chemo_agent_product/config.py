@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     launch_signing_key: SecretStr | None = None
     trusted_host_origins: list[str] = Field(default_factory=list)
     hospital_adapter_config: str | None = None
+    hospital_delivery_config: str | None = None
     context_ttl_seconds: int = Field(default=1800, ge=60, le=86400)
     worker_poll_seconds: float = Field(default=1, ge=0.1, le=60)
     worker_lease_seconds: int = Field(default=180, ge=30, le=900)

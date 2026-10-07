@@ -40,179 +40,179 @@ class AgentService:
 
     async def enqueue(self, p, context_id, request: AgentRequest, key):
         async with self.pool.acquire() as c, c.transaction():
-            context = await self.workflow.scoped_context(c, context_id, p)
-            cmd, cached = await self.workflow.command(
-                c,
-                p,
-                "AGENT_RUN",
-                key,
-                {"context_id": str(context_id), **request.model_dump(mode="json")},
-            )
-            if cached:
-                return cached
-            decision = await c.fetchrow(
-                """SELECT * FROM clinical.decision_run WHERE launch_context_id=$1
-              AND prepare_run_id=$2 AND purpose='MATCH_CANDIDATES' AND status='SUCCEEDED'
-              ORDER BY created_at DESC LIMIT 1""",
+            return await self.enqueue_at(c, p, context_id, request, key)
+
+    async def enqueue_at(self, c, p, context_id, request: AgentRequest, key):
+        context = await self.workflow.scoped_context(c, context_id, p)
+        cmd, cached = await self.workflow.command(
+            c,
+            p,
+            "AGENT_RUN",
+            key,
+            {"context_id": str(context_id), **request.model_dump(mode="json")},
+        )
+        if cached:
+            return cached
+        decision = await c.fetchrow(
+            """SELECT * FROM clinical.decision_run WHERE launch_context_id=$1
+          AND prepare_run_id=$2 AND purpose='MATCH_CANDIDATES' AND status='SUCCEEDED'
+          ORDER BY created_at DESC LIMIT 1""",
+            context_id,
+            context["current_prepare_run_id"],
+        )
+        if not decision:
+            raise BusinessError("PREPARE_NOT_READY", "请等待当前患者准备完成", 409)
+        revision = None
+        if request.kind == "REVIEWER":
+            if not request.revision_id:
+                raise BusinessError("REVIEW_REVISION_REQUIRED", "请先保存需要复核的修订", 422)
+            revision = await c.fetchrow(
+                """SELECT r.*,i.template_ref_id FROM clinical.patient_regimen_revision r
+              JOIN clinical.patient_regimen_instance i ON i.id=r.instance_id WHERE r.id=$1 AND i.origin_context_id=$2""",
+                request.revision_id,
                 context_id,
-                context["current_prepare_run_id"],
             )
-            if not decision:
-                raise BusinessError("PREPARE_NOT_READY", "请等待当前患者准备完成", 409)
-            revision = None
-            if request.kind == "REVIEWER":
-                if not request.revision_id:
-                    raise BusinessError("REVIEW_REVISION_REQUIRED", "请先保存需要复核的修订", 422)
-                revision = await c.fetchrow(
-                    """SELECT r.*,i.template_ref_id FROM clinical.patient_regimen_revision r
-                  JOIN clinical.patient_regimen_instance i ON i.id=r.instance_id WHERE r.id=$1 AND i.origin_context_id=$2""",
-                    request.revision_id,
-                    context_id,
-                )
-                if not revision:
-                    raise BusinessError("REVISION_FORBIDDEN", "复核修订不属于当前患者", 403)
-                manifest = revision["selection_manifest"].get("knowledge_manifest", {})
-                decision = await insert(
-                    c,
-                    "clinical.decision_run",
-                    dict(
-                        created_by_principal=p.subject,
-                        launch_context_id=context_id,
-                        snapshot_id=revision["snapshot_id"],
-                        purpose="ASSESS_REVISION",
-                        selected_template_ref_id=revision["template_ref_id"],
-                        target_revision_id=revision["id"],
-                        input_hash=revision["content_hash"],
-                        input_contract_version="revision.v1",
-                        capability_manifest={"reviewer": "READ_ONLY"},
-                        orchestrator_version="patient-flow.v1",
-                        usage_mode="TEST_ONLY",
-                        knowledge_manifest=manifest,
-                        manifest_hash=fingerprint(manifest),
-                        status="SUCCEEDED",
-                        release_gate_state="UNVERIFIED",
-                        outcome_code="REVIEW_REQUESTED",
-                        output_contract_version="review-input.v1",
-                        output_payload={"revision_id": str(revision["id"])},
-                        output_hash=fingerprint({"revision_id": str(revision["id"])}),
-                    ),
-                )
-            elif request.revision_id:
-                raise BusinessError(
-                    "AGENT_REVISION_NOT_EXPECTED", "主 Agent 任务不接受复核修订", 422
-                )
-            profile_payload = self.profile_payload(request.kind)
-            profile_hash = fingerprint(profile_payload)
-            await c.execute(
-                "SELECT pg_advisory_xact_lock(hashtextextended($1,0))", f"profile:{request.kind}"
-            )
-            profile = await c.fetchrow(
-                "SELECT * FROM agent.agent_profile_version WHERE config_hash=$1 AND profile_kind=$2",
-                profile_hash,
-                request.kind,
-            )
-            if not profile:
-                version = await c.fetchval(
-                    "SELECT coalesce(max(version_no),0)+1 FROM agent.agent_profile_version WHERE profile_key=$1",
-                    f"clinical-{request.kind.lower()}",
-                )
-                profile = await insert(
-                    c,
-                    "agent.agent_profile_version",
-                    dict(
-                        created_by_principal=p.subject,
-                        profile_key=f"clinical-{request.kind.lower()}",
-                        profile_kind=request.kind,
-                        version_no=version,
-                        runtime_kind="CLAUDE_AGENT_SDK",
-                        model_ref=profile_payload["model"] or "NOT_CONFIGURED",
-                        system_prompt_ref=prompt_path(request.kind).name,
-                        system_prompt_hash=profile_payload["prompt_hash"],
-                        toolset_policy={"allowed": list(TOOLS), "builtins": []},
-                        permission_policy={"access": "READ_ONLY", "scope": "BOUND_INPUT"},
-                        budget_policy={
-                            k: profile_payload[k]
-                            for k in ["max_turns", "max_budget_usd", "timeout"]
-                        },
-                        output_schema_version="agent-output.v1",
-                        config_hash=profile_hash,
-                        status="DRAFT",
-                    ),
-                )
-            snapshot = await c.fetchrow(
-                "SELECT * FROM clinical.clinical_snapshot WHERE id=$1", decision["snapshot_id"]
-            )
-            reference = {
-                "context_id": str(context_id),
-                "decision_id": str(decision["id"]),
-                "matching_decision_id": str(decision["id"])
-                if request.kind == "RECOMMENDATION"
-                else str(
-                    await c.fetchval(
-                        """SELECT id FROM clinical.decision_run WHERE launch_context_id=$1
-              AND purpose='MATCH_CANDIDATES' AND snapshot_id=$2 ORDER BY created_at DESC LIMIT 1""",
-                        context_id,
-                        revision["snapshot_id"],
-                    )
-                ),
-                "snapshot_ref": Reference(
-                    namespace="clinical.clinical_snapshot",
-                    id=str(snapshot["id"]),
-                    version=str(snapshot["snapshot_no"]),
-                    content_hash=snapshot["content_hash"],
-                ).model_dump(mode="json"),
-                "question": request.question,
-                "revision_id": str(revision["id"]) if revision else None,
-                "revision_hash": revision["content_hash"] if revision else None,
-                "knowledge_manifest": decision["knowledge_manifest"],
-            }
-            run = await insert(
+            if not revision:
+                raise BusinessError("REVISION_FORBIDDEN", "复核修订不属于当前患者", 403)
+            manifest = revision["selection_manifest"].get("knowledge_manifest", {})
+            decision = await insert(
                 c,
-                "agent.agent_run",
+                "clinical.decision_run",
                 dict(
                     created_by_principal=p.subject,
-                    decision_run_id=decision["id"],
-                    profile_version_id=profile["id"],
-                    status="QUEUED" if self.settings.model_configured else "FAILED",
-                    input_contract_version="agent-input.v1",
-                    input_reference=reference,
-                    input_hash=fingerprint(reference),
-                    sdk_runtime_version=sdk_version(),
-                    trace_id=str(uuid4()),
-                    error_code=None if self.settings.model_configured else "MODEL_NOT_CONFIGURED",
-                    completed_at=None if self.settings.model_configured else datetime.now(UTC),
+                    launch_context_id=context_id,
+                    snapshot_id=revision["snapshot_id"],
+                    purpose="ASSESS_REVISION",
+                    selected_template_ref_id=revision["template_ref_id"],
+                    target_revision_id=revision["id"],
+                    input_hash=revision["content_hash"],
+                    input_contract_version="revision.v1",
+                    capability_manifest={"reviewer": "READ_ONLY"},
+                    orchestrator_version="patient-flow.v1",
+                    usage_mode="TEST_ONLY",
+                    knowledge_manifest=manifest,
+                    manifest_hash=fingerprint(manifest),
+                    status="SUCCEEDED",
+                    release_gate_state="UNVERIFIED",
+                    outcome_code="REVIEW_REQUESTED",
+                    output_contract_version="review-input.v1",
+                    output_payload={"revision_id": str(revision["id"])},
+                    output_hash=fingerprint({"revision_id": str(revision["id"])}),
                 ),
             )
-            if self.settings.model_configured:
-                await insert(
-                    c,
-                    "ops.job",
-                    dict(
-                        created_by_principal=p.subject,
-                        hospital_id=p.hospital_id,
-                        job_kind="AGENT_RUN",
-                        agent_run_id=run["id"],
-                        dedupe_key=f"agent:{run['id']}",
-                        available_at=datetime.now(UTC),
-                        max_attempts=1,
-                    ),
-                )
-            result = {
-                "agent_run_id": str(run["id"]),
-                "status": run["status"],
-                "error_code": run["error_code"],
-                "runtime_kind": "CLAUDE_AGENT_SDK",
-            }
-            await self.workflow.audit(
-                c,
-                p,
-                context,
-                "AGENT_REQUESTED",
-                run["id"],
-                {"kind": request.kind, "status": run["status"]},
+        elif request.revision_id:
+            raise BusinessError("AGENT_REVISION_NOT_EXPECTED", "主 Agent 任务不接受复核修订", 422)
+        profile_payload = self.profile_payload(request.kind)
+        profile_hash = fingerprint(profile_payload)
+        await c.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended($1,0))", f"profile:{request.kind}"
+        )
+        profile = await c.fetchrow(
+            "SELECT * FROM agent.agent_profile_version WHERE config_hash=$1 AND profile_kind=$2",
+            profile_hash,
+            request.kind,
+        )
+        if not profile:
+            version = await c.fetchval(
+                "SELECT coalesce(max(version_no),0)+1 FROM agent.agent_profile_version WHERE profile_key=$1",
+                f"clinical-{request.kind.lower()}",
             )
-            await self.workflow.complete(c, cmd, result, "agent_run", run["id"])
-            return result
+            profile = await insert(
+                c,
+                "agent.agent_profile_version",
+                dict(
+                    created_by_principal=p.subject,
+                    profile_key=f"clinical-{request.kind.lower()}",
+                    profile_kind=request.kind,
+                    version_no=version,
+                    runtime_kind="CLAUDE_AGENT_SDK",
+                    model_ref=profile_payload["model"] or "NOT_CONFIGURED",
+                    system_prompt_ref=prompt_path(request.kind).name,
+                    system_prompt_hash=profile_payload["prompt_hash"],
+                    toolset_policy={"allowed": list(TOOLS), "builtins": []},
+                    permission_policy={"access": "READ_ONLY", "scope": "BOUND_INPUT"},
+                    budget_policy={
+                        k: profile_payload[k] for k in ["max_turns", "max_budget_usd", "timeout"]
+                    },
+                    output_schema_version="agent-output.v1",
+                    config_hash=profile_hash,
+                    status="DRAFT",
+                ),
+            )
+        snapshot = await c.fetchrow(
+            "SELECT * FROM clinical.clinical_snapshot WHERE id=$1", decision["snapshot_id"]
+        )
+        reference = {
+            "context_id": str(context_id),
+            "decision_id": str(decision["id"]),
+            "matching_decision_id": str(decision["id"])
+            if request.kind == "RECOMMENDATION"
+            else str(
+                await c.fetchval(
+                    """SELECT id FROM clinical.decision_run WHERE launch_context_id=$1
+          AND purpose='MATCH_CANDIDATES' AND snapshot_id=$2 ORDER BY created_at DESC LIMIT 1""",
+                    context_id,
+                    revision["snapshot_id"],
+                )
+            ),
+            "snapshot_ref": Reference(
+                namespace="clinical.clinical_snapshot",
+                id=str(snapshot["id"]),
+                version=str(snapshot["snapshot_no"]),
+                content_hash=snapshot["content_hash"],
+            ).model_dump(mode="json"),
+            "question": request.question,
+            "revision_id": str(revision["id"]) if revision else None,
+            "revision_hash": revision["content_hash"] if revision else None,
+            "knowledge_manifest": decision["knowledge_manifest"],
+        }
+        run = await insert(
+            c,
+            "agent.agent_run",
+            dict(
+                created_by_principal=p.subject,
+                decision_run_id=decision["id"],
+                profile_version_id=profile["id"],
+                status="QUEUED" if self.settings.model_configured else "FAILED",
+                input_contract_version="agent-input.v1",
+                input_reference=reference,
+                input_hash=fingerprint(reference),
+                sdk_runtime_version=sdk_version(),
+                trace_id=str(uuid4()),
+                error_code=None if self.settings.model_configured else "MODEL_NOT_CONFIGURED",
+                completed_at=None if self.settings.model_configured else datetime.now(UTC),
+            ),
+        )
+        if self.settings.model_configured:
+            await insert(
+                c,
+                "ops.job",
+                dict(
+                    created_by_principal=p.subject,
+                    hospital_id=p.hospital_id,
+                    job_kind="AGENT_RUN",
+                    agent_run_id=run["id"],
+                    dedupe_key=f"agent:{run['id']}",
+                    available_at=await c.fetchval("SELECT clock_timestamp()"),
+                    max_attempts=1,
+                ),
+            )
+        result = {
+            "agent_run_id": str(run["id"]),
+            "status": run["status"],
+            "error_code": run["error_code"],
+            "runtime_kind": "CLAUDE_AGENT_SDK",
+        }
+        await self.workflow.audit(
+            c,
+            p,
+            context,
+            "AGENT_REQUESTED",
+            run["id"],
+            {"kind": request.kind, "status": run["status"]},
+        )
+        await self.workflow.complete(c, cmd, result, "agent_run", run["id"])
+        return result
 
     async def read(self, p, context_id, run_id):
         async with self.pool.acquire() as c, c.transaction(readonly=True):

@@ -1,0 +1,83 @@
+{
+  "contract_version": "v1.0.1",
+  "credential_environment_variable": "CHEMO_PRODUCT_HOSPITAL_AUTHORIZATION",
+  "hospital_code": null,
+  "timeout_seconds": 15,
+  "schema_version": "hospital-adapter.v1",
+  "operations": {
+    "Q_GetPatientClinicalData": {
+      "url": null,
+      "method": "POST",
+      "response_pointer": "/data/content",
+      "patient_pointer": null,
+      "encounter_pointer": null,
+      "identity_policy": "RESPONSE",
+      "request_defaults": {}
+    },
+    "Q_GetPatientEncounter": {
+      "url": null,
+      "method": "POST",
+      "response_pointer": "/data/content",
+      "patient_pointer": null,
+      "encounter_pointer": null,
+      "identity_policy": "RESPONSE",
+      "request_defaults": {}
+    },
+    "Q_GetClinicalRecord": {
+      "url": null,
+      "method": "POST",
+      "response_pointer": "/data/content",
+      "patient_pointer": null,
+      "encounter_pointer": null,
+      "identity_policy": "RESPONSE",
+      "request_defaults": {}
+    },
+    "Q_GetClinicalReport": {
+      "url": null,
+      "method": "POST",
+      "response_pointer": "/data/content",
+      "patient_pointer": null,
+      "encounter_pointer": null,
+      "identity_policy": "RESPONSE",
+      "request_defaults": {}
+    },
+    "Q_GetDrugOrdersHistory": {
+      "url": null,
+      "method": "POST",
+      "response_pointer": "/data/content",
+      "patient_pointer": null,
+      "encounter_pointer": null,
+      "identity_policy": "RESPONSE",
+      "request_defaults": {}
+    },
+    "Q_GetOrderDictionary": {
+      "url": null,
+      "method": "POST",
+      "response_pointer": "/data/content",
+      "patient_pointer": null,
+      "encounter_pointer": null,
+      "identity_policy": "RESPONSE",
+      "request_defaults": {}
+    },
+    "Q_GetMedicalStaffInfo": {
+      "url": null,
+      "method": "POST",
+      "response_pointer": "/data/content",
+      "patient_pointer": null,
+      "encounter_pointer": null,
+      "identity_policy": "RESPONSE",
+      "request_defaults": {}
+    },
+    "Q_GetPatientOperationHistory": {
+      "url": null,
+      "method": "POST",
+      "response_pointer": "/data/content",
+      "patient_pointer": null,
+      "encounter_pointer": null,
+      "identity_policy": "RESPONSE",
+      "request_defaults": {}
+    }
+  },
+  "facts": {},
+  "text_records": []
+}

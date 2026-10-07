@@ -157,7 +157,7 @@ class Workflow:
                 job_kind="PREPARE",
                 prepare_run_id=run["id"],
                 dedupe_key=f"prepare:{run['id']}",
-                available_at=datetime.now(UTC),
+                available_at=await c.fetchval("SELECT clock_timestamp()"),
                 max_attempts=3,
                 status="QUEUED",
             ),
@@ -305,6 +305,29 @@ class Workflow:
             await self.complete(c, cmd, result, "launch_context", context["id"])
             return result
 
+    async def preparation_status(self, p: Principal, context_id: UUID):
+        async with self.pool.acquire() as c, c.transaction(readonly=True):
+            context = await self.scoped_context(c, context_id, p, active=False)
+            decision = await c.fetchrow(
+                """SELECT d.status,(SELECT count(*) FROM clinical.decision_candidate dc
+                WHERE dc.decision_run_id=d.id) AS candidate_count
+                FROM clinical.decision_run d WHERE d.launch_context_id=$1
+                AND d.prepare_run_id=$2 AND d.purpose='MATCH_CANDIDATES'
+                ORDER BY d.created_at DESC,d.id DESC LIMIT 1""",
+                context_id,
+                context["current_prepare_run_id"],
+            )
+        return {
+            "context_id": str(context_id),
+            "context_state": context["context_state"],
+            "expires_at": context["expires_at"].isoformat(),
+            "generation": context["active_generation"],
+            "prepare_status": context["prepare_status"],
+            "prepare_stage": context["prepare_stage"],
+            "decision_status": decision["status"] if decision else None,
+            "candidate_count": decision["candidate_count"] if decision else 0,
+        }
+
     async def read_context(self, p: Principal, context_id: UUID):
         async with self.pool.acquire() as c, c.transaction(readonly=True):
             context = await self.scoped_context(c, context_id, p, active=False)
@@ -334,9 +357,21 @@ class Workflow:
                 else None
             )
             instances = await c.fetch(
-                """SELECT id,row_version,current_revision_id,current_confirmed_revision_id
-              FROM clinical.patient_regimen_instance WHERE origin_context_id=$1 ORDER BY created_at DESC""",
+                """SELECT i.id,i.row_version,i.current_revision_id,i.current_confirmed_revision_id,
+                t.template_payload->>'display_name' AS display_name,
+                (i.origin_context_id<>$4 OR d.snapshot_id IS DISTINCT FROM $5) AS read_only
+                FROM clinical.patient_regimen_instance i
+                JOIN catalog_bridge.template_version_reference t ON t.id=i.template_ref_id
+                LEFT JOIN clinical.decision_candidate dc ON dc.id=i.origin_candidate_id
+                LEFT JOIN clinical.decision_run d ON d.id=dc.decision_run_id
+                WHERE i.hospital_id=$1 AND i.patient_reference_id=$2 AND i.encounter_reference_id=$3
+                AND (i.current_revision_id IS NOT NULL OR i.origin_context_id=$4)
+                ORDER BY i.created_at DESC,i.id DESC""",
+                p.hospital_id,
+                context["patient_reference_id"],
+                context["encounter_reference_id"],
                 context_id,
+                context["snapshot_id"],
             )
         return dict(
             context_id=str(context_id),
@@ -515,10 +550,12 @@ class Workflow:
           JOIN catalog_bridge.template_version_reference t ON t.id=i.template_ref_id
           LEFT JOIN clinical.decision_candidate cand ON cand.id=i.origin_candidate_id
           LEFT JOIN clinical.decision_run d ON d.id=cand.decision_run_id
-          WHERE i.id=$1 AND i.origin_context_id=$2"""
+          WHERE i.id=$1 AND i.hospital_id=$2 AND i.patient_reference_id=$3 AND i.encounter_reference_id=$4"""
             + (" FOR UPDATE OF i" if lock else ""),
             instance_id,
-            context_id,
+            p.hospital_id,
+            context["patient_reference_id"],
+            context["encounter_reference_id"],
         )
         if not row:
             raise BusinessError("INSTANCE_FORBIDDEN", "患者方案不属于本次上下文", 403)
@@ -573,6 +610,12 @@ class Workflow:
             )
         return dict(
             instance_id=str(instance_id),
+            read_only=bool(
+                row["origin_context_id"] != context_id
+                or row["origin_snapshot_id"] != context["snapshot_id"]
+                or revision_id
+                and revision_id != row["current_revision_id"]
+            ),
             row_version=row["row_version"],
             template=row["template_payload"],
             snapshot=payload,

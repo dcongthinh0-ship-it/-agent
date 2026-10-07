@@ -3,17 +3,17 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, Protocol
-from uuid import uuid4
+from uuid import UUID
 from zoneinfo import ZoneInfo
 
 import httpx
 from pydantic import Field
 
 from chemo_agent_product.domain import Contract, Fact, PatientSnapshot, Reference, fingerprint
+from chemo_agent_product.hospital_transport import call_hospital
 from chemo_agent_product.security import BusinessError
 
 READ_OPERATIONS = frozenset(
@@ -79,6 +79,7 @@ class SourcePayload(Contract):
     identity_state: str
     payload: dict[str, Any]
     content_hash: str
+    request_attempt_id: UUID | None = None
 
 
 class HospitalReader(Protocol):
@@ -115,13 +116,12 @@ class ConfiguredHospitalReader:
         ):
             raise ValueError("field or text mapping points to an unconfigured operation")
 
-    async def fetch(self, patient: str, encounter: str, operator: str) -> list[SourcePayload]:
+    async def fetch(
+        self, patient: str, encounter: str, operator: str, observer=None
+    ) -> list[SourcePayload]:
         profile = self.profile
         if not profile or not profile.operations:
             raise BusinessError("HOSPITAL_NOT_CONFIGURED", "院方读取服务尚未配置", 503)
-        credential = os.environ.get(profile.credential_environment_variable or "")
-        if not credential:
-            raise BusinessError("HOSPITAL_CREDENTIAL_NOT_CONFIGURED", "院方认证尚未配置", 503)
         async with httpx.AsyncClient(
             timeout=profile.timeout_seconds, transport=self.transport, follow_redirects=False
         ) as client:
@@ -131,12 +131,8 @@ class ConfiguredHospitalReader:
                     if config.required:
                         raise BusinessError("HOSPITAL_ROUTE_NOT_CONFIGURED", "院方路由待配置", 503)
                     return None
-                u = httpx.URL(config.url)
-                if u.scheme not in {"http", "https"} or u.userinfo:
-                    raise BusinessError("HOSPITAL_ROUTE_INVALID", "院方路由配置不正确", 503)
                 records = []
                 for page in range(1, config.max_pages + 1):
-                    stamp = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y%m%d%H%M%S%f")[:-3]
                     body = {
                         **config.request_defaults,
                         "patient_id": patient,
@@ -144,20 +140,9 @@ class ConfiguredHospitalReader:
                     }
                     if "page" in body:
                         body["page"] = page
-                    headers = {
-                        "Request-Id": str(uuid4()),
-                        "Timestamp": stamp,
-                        "Authorization": credential,
-                        "Operator-Id": operator,
-                        "Content-Type": "application/json;charset=utf-8",
-                    }
-                    if profile.hospital_code:
-                        headers["Hospital-Code"] = profile.hospital_code
-                    response = await client.post(config.url, json=body, headers=headers)
-                    response.raise_for_status()
-                    data = response.json()
-                    if not isinstance(data, dict) or str(data.get("code")) != "0":
-                        raise BusinessError("HOSPITAL_READ_FAILED", "院方未返回成功读取状态", 502)
+                    data, attempt_id = await call_hospital(
+                        client, profile, name, config, body, operator, observer
+                    )
                     if config.identity_policy == "RESPONSE":
                         if not config.patient_pointer or not config.encounter_pointer:
                             raise BusinessError(
@@ -181,6 +166,7 @@ class ConfiguredHospitalReader:
                             else "CONFIGURED_REQUEST_SCOPE",
                             payload=data,
                             content_hash=fingerprint(data),
+                            request_attempt_id=attempt_id,
                         )
                     )
                     total = pointer(data, "/data/total")

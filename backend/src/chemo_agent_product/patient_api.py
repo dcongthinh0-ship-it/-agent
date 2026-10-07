@@ -62,6 +62,11 @@ async def refresh(
     return await w.refresh(p, context_id, idempotency_key, request.expected_generation)
 
 
+@router.get("/contexts/{context_id}/preparation-status")
+async def preparation_status(context_id: UUID, p: PrincipalDep, w: WorkflowDep):
+    return await w.preparation_status(p, context_id)
+
+
 @router.get("/contexts/{context_id}/candidates/{candidate_id}")
 async def detail(context_id: UUID, candidate_id: UUID, p: PrincipalDep, w: WorkflowDep):
     return await w.detail(p, context_id, candidate_id)
@@ -86,6 +91,13 @@ async def select(
 @router.get("/contexts/{context_id}/instances/{instance_id}")
 async def instance(context_id: UUID, instance_id: UUID, p: PrincipalDep, w: WorkflowDep):
     return await w.read_instance(p, context_id, instance_id)
+
+
+@router.get("/contexts/{context_id}/instances/{instance_id}/hospital-readiness")
+async def hospital_readiness(context_id: UUID, instance_id: UUID, p: PrincipalDep, w: WorkflowDep):
+    from chemo_agent_product.delivery import readiness
+
+    return await readiness(w, p, context_id, instance_id)
 
 
 @router.get("/contexts/{context_id}/instances/{instance_id}/revisions/{revision_id}")

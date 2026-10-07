@@ -83,3 +83,21 @@ async def test_identity_mismatch_stops_before_snapshot(tmp_path, monkeypatch):
 def test_json_pointer_handles_missing_and_escaped_keys():
     assert pointer({"a/b": {"~": [1]}}, "/a~1b/~0/0") == 1
     assert pointer({}, "/missing") is None
+
+
+@pytest.mark.asyncio
+async def test_transport_observer_records_response_hash_without_credentials(tmp_path, monkeypatch):
+    events = []
+
+    async def observer(event):
+        events.append(event)
+
+    await configure(tmp_path, monkeypatch).fetch(
+        "CONTRACT_PATIENT", "CONTRACT_ENCOUNTER", "CONTRACT_DOCTOR", observer=observer
+    )
+    assert [event["phase"] for event in events] == ["STARTED", "COMPLETED"]
+    assert events[1]["transport_outcome"] == "RESPONDED"
+    assert events[1]["business_code"] == "0" and len(events[1]["response_hash"]) == 64
+    assert not any(
+        "authorization" in str(event).lower() or "CONTRACT_ONLY" in str(event) for event in events
+    )
