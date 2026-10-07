@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import { PatientEditor } from './PatientEditor'
 import { ClinicalWorkbench } from './ClinicalWorkbench'
+import { ManagementPage } from './ManagementPage'
+import { connectHost } from './host'
 import {
   ApiFailure,
   getJson,
@@ -45,8 +47,11 @@ function Failure({ message, onRetry }: { message: string; onRetry: () => void })
 }
 
 function App() {
-  const [activeArea, setActiveArea] = useState<'catalog' | 'workbench'>(window.location.pathname === '/catalog' ? 'catalog' : 'workbench')
+  type Area = 'catalog' | 'workbench' | 'evidence' | 'operations'
+  const areaFromLocation = (): Area => ({ '/catalog': 'catalog', '/evidence': 'evidence', '/operations': 'operations' } as Record<string, Area>)[window.location.pathname] || 'workbench'
+  const [activeArea, setActiveArea] = useState<Area>(areaFromLocation)
   const [contextId, setContextId] = useState<string | null>(new URLSearchParams(window.location.search).get('context_id'))
+  const [authGeneration, setAuthGeneration] = useState(0)
   const [status, setStatus] = useState<CapabilityStatus | null>(null)
   const [query, setQuery] = useState('')
   const [search, setSearch] = useState('')
@@ -69,8 +74,15 @@ function App() {
   const [formMode, setFormMode] = useState<'view' | 'edit' | null>(null)
 
   useEffect(() => {
+    let dispose: (() => void) | undefined
+    let cancelled = false
+    void connectHost(id => { if (!cancelled) { setContextId(id); setAuthGeneration(value => value + 1); setFormMode(null); setDrawerItem(null); setActiveArea('workbench') } }).then(stop => { if (cancelled) stop(); else dispose = stop })
+    return () => { cancelled = true; dispose?.() }
+  }, [])
+
+  useEffect(() => {
     const onLocation = () => {
-      setActiveArea(window.location.pathname === '/catalog' ? 'catalog' : 'workbench')
+      setActiveArea(areaFromLocation())
       setContextId(new URLSearchParams(window.location.search).get('context_id'))
       setFormMode(null)
       setDrawerItem(null)
@@ -137,8 +149,8 @@ function App() {
   }, [drawerItem])
 
   const choose = (item: RegimenSummary) => { setSelected(item); setMobileDetail(true); setDrawerItem(null); setFormMode(null) }
-  const changeArea = (area: 'catalog' | 'workbench') => {
-    window.history.pushState(null, '', area === 'catalog' ? '/catalog' : contextId ? `/?context_id=${encodeURIComponent(contextId)}` : '/')
+  const changeArea = (area: Area) => {
+    window.history.pushState(null, '', area === 'workbench' ? contextId ? `/?context_id=${encodeURIComponent(contextId)}` : '/' : `/${area}`)
     setActiveArea(area)
     setFormMode(null)
     setDrawerItem(null)
@@ -153,19 +165,19 @@ function App() {
       <nav className="rail-nav">
         <button className={`rail-item ${activeArea === 'workbench' ? 'active' : ''}`} aria-current={activeArea === 'workbench' ? 'page' : undefined} title="患者工作台" onClick={() => changeArea('workbench')}><Icon name="book" /><span>工作台</span></button>
         <button className={`rail-item ${activeArea === 'catalog' ? 'active' : ''}`} aria-current={activeArea === 'catalog' ? 'page' : undefined} title="方案与证据浏览" onClick={() => changeArea('catalog')}><Icon name="grid" /><span>浏览</span></button>
-        <div className="rail-item rail-item-pending" aria-label="证据维护，待开发" title="证据维护待开发"><Icon name="layers" /><span>证据</span><small>待开发</small></div>
-        <div className="rail-item rail-item-pending" aria-label="运行管理，待开发" title="运行管理待开发"><Icon name="activity" /><span>运行</span><small>待开发</small></div>
+        <button className={`rail-item ${activeArea === 'evidence' ? 'active' : ''}`} aria-current={activeArea === 'evidence' ? 'page' : undefined} title="知识与证据核对" onClick={() => changeArea('evidence')}><Icon name="layers" /><span>证据</span></button>
+        <button className={`rail-item ${activeArea === 'operations' ? 'active' : ''}`} aria-current={activeArea === 'operations' ? 'page' : undefined} title="运行管理" onClick={() => changeArea('operations')}><Icon name="activity" /><span>运行</span></button>
       </nav>
       <div className="rail-bottom"><span className="rail-dot" /> V0.1</div>
     </aside>
 
     <div className="shell-content">
       <header className="topbar">
-        <div className="breadcrumb"><span>化疗智能体</span><Icon name="chevron" size={14} /><strong>{activeArea === 'catalog' ? '方案与证据浏览' : '患者工作台'}</strong></div>
-        <div className="topbar-right"><Badge tone="warning">只读测试</Badge><span className="topbar-separator" /><span className="system-state"><span className={`status-dot ${status?.database === 'CONNECTED' ? 'is-on' : ''}`} />方案库{status?.database === 'CONNECTED' ? '已连接' : '未连接'}</span></div>
+        <div className="breadcrumb"><span>化疗智能体</span><Icon name="chevron" size={14} /><strong>{{ catalog: '方案与证据浏览', workbench: '患者工作台', evidence: '知识与证据核对', operations: '运行管理' }[activeArea]}</strong></div>
+        <div className="topbar-right"><Badge tone="quiet">内部测试</Badge><span className="topbar-separator" /><span className="system-state"><span className={`status-dot ${status?.database === 'CONNECTED' ? 'is-on' : ''}`} />方案库{status?.database === 'CONNECTED' ? '已连接' : '未连接'}</span></div>
       </header>
 
-      {activeArea === 'workbench' ? <ClinicalWorkbench key={contextId || 'no-context'} contextId={contextId} /> : <main>
+      {activeArea === 'workbench' ? <ClinicalWorkbench key={`${contextId || 'no-context'}:${authGeneration}`} contextId={contextId} /> : activeArea === 'evidence' || activeArea === 'operations' ? <ManagementPage key={`${activeArea}:${authGeneration}`} area={activeArea} /> : <main>
         <div className="page-intro">
           <div><p className="eyebrow">CATALOG REVIEW / 01</p><h1>方案与证据浏览<span className="title-mark">.</span></h1><p className="page-subtitle">核对固定版本与来源，当前不进行患者决策。</p></div>
           <div className="intro-side"><span className="intro-side-label">当前能力</span><strong>方案与证据 · 只读浏览</strong><span>模型、医院接口和临床推荐尚未接入</span></div>
@@ -210,7 +222,7 @@ function App() {
                 {evidence?.truncated && <p className="muted">关联证据超过当前读取上限；请使用维护入口核对完整清单。</p>}
               </section>
 
-              <section className="detail-section content-section"><div className="section-title"><div><span className="section-number">03</span><h3>原记录单追溯</h3></div><span>{content.length} 个内容块</span></div><p className="muted">原记录单仅用于核对来源。患者方案编辑尚未接通；这里查看或展开原文不会创建患者实例，也不会回写公共模板。</p><button className="text-button content-toggle" onClick={() => setShowAllContent(!showAllContent)}>{showAllContent ? '收起原文' : `展开前 4 个原文块` } <Icon name="chevron" size={16} /></button>{showAllContent && <div className="content-list">{visibleContent.map((block, i) => <article className="content-block" key={`${block.section_code}-${block.display_order}-${i}`}><span>{block.section_code} / {String(block.display_order).padStart(2, '0')}</span><h4>{block.title || '原文内容'}</h4><p>{block.raw_text || '该内容块没有可展示原文'}</p></article>)}</div>}{detail.content_truncated && <p className="muted">仅显示前 200 个内容块。</p>}</section>
+              <section className="detail-section content-section"><div className="section-title"><div><span className="section-number">03</span><h3>原记录单追溯</h3></div><span>{content.length} 个内容块</span></div><p className="muted">原记录单用于核对来源。完整表单可在上方打开；患者方案从工作台选用后进入同一表单编辑。</p><button className="text-button content-toggle" onClick={() => setShowAllContent(!showAllContent)}>{showAllContent ? '收起原文' : `展开前 4 个原文块` } <Icon name="chevron" size={16} /></button>{showAllContent && <div className="content-list">{visibleContent.map((block, i) => <article className="content-block" key={`${block.section_code}-${block.display_order}-${i}`}><span>{block.section_code} / {String(block.display_order).padStart(2, '0')}</span><h4>{block.title || '原文内容'}</h4><p>{block.raw_text || '该内容块没有可展示原文'}</p></article>)}</div>}{detail.content_truncated && <p className="muted">仅显示前 200 个内容块。</p>}</section>
             </div>}
           </section>
         </div>

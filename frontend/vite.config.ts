@@ -5,7 +5,7 @@ export default defineConfig({
   plugins: [react()],
   server: {
     proxy: {
-      '/api': 'http://127.0.0.1:8011',
+      '/api': process.env.CHEMO_API_ORIGIN || 'http://127.0.0.1:8011',
     },
   },
 })
