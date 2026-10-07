@@ -577,3 +577,56 @@ async def test_partial_revision_preserves_fields_and_old_version_can_be_restored
         old["field_values"]["current_cycle"] == 1 and old["revision_hash"] == saved["revision_hash"]
     )
     assert changed["revision_no"] == 2
+
+
+@pytest.mark.asyncio
+async def test_reviewer_reads_exact_saved_patient_fields(environment):
+    from chemo_agent_product.agents import AgentService
+    from chemo_agent_product.patient_contracts import AgentRequest
+
+    c, w, p, pool, settings = environment
+    context = UUID((await w.launch(p, launch_input(), "review-fields-launch"))["context_id"])
+    worker = Worker(pool, settings, ReaderDouble())
+    await worker.prepare(await worker.claim())
+    candidate = (await w.read_context(p, context))["candidates"][0]["candidate_id"]
+    instance = UUID((await w.select(p, context, candidate, "review-fields-select"))["instance_id"])
+    saved = await w.save(
+        p,
+        context,
+        instance,
+        SaveInput(
+            expected_row_version=1,
+            field_values={"current_cycle": 1, "treatment_date": "2026-10-08"},
+        ),
+        "review-fields-save",
+    )
+    service = AgentService(w)
+    requested = await service.enqueue(
+        p,
+        context,
+        AgentRequest(
+            kind="REVIEWER",
+            revision_id=UUID(saved["revision_id"]),
+        ),
+        "review-fields-enqueue",
+    )
+    run = await c.fetchrow(
+        "SELECT * FROM agent.agent_run WHERE id=$1", UUID(requested["agent_run_id"])
+    )
+    await w.save(
+        p,
+        context,
+        instance,
+        SaveInput(
+            expected_row_version=2,
+            base_revision_id=UUID(saved["revision_id"]),
+            field_values={"current_cycle": 2},
+            change_reason="contract verification",
+        ),
+        "review-fields-second-save",
+    )
+    bound = await service.bindings(run)
+    assert bound["field_values"]["current_cycle"] == 1
+    assert bound["field_values"]["treatment_date"] == "2026-10-08"
+    assert bound["field_provenance"]["current_cycle"]["value_source"] == "DOCTOR"
+    assert str(bound["revision"]["id"]) == saved["revision_id"]

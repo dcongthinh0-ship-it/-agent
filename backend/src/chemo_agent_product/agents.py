@@ -426,8 +426,14 @@ class AgentService:
                     "SELECT * FROM clinical.patient_regimen_order_item WHERE revision_id=$1 ORDER BY line_no",
                     revision["id"],
                 )
+                fields = await c.fetch(
+                    "SELECT field_key,value_json,value_state,value_source,provenance_ref "
+                    "FROM clinical.patient_regimen_field_value WHERE revision_id=$1 ORDER BY field_key",
+                    revision["id"],
+                )
             else:
                 orders = []
+                fields = []
         return {
             "snapshot": snapshot,
             "refs": refs,
@@ -436,6 +442,11 @@ class AgentService:
             "manifest": manifest,
             "revision": dict(revision) if revision else None,
             "orders": [dict(r) for r in orders],
+            "field_values": {r["field_key"]: r["value_json"] for r in fields},
+            "field_provenance": {
+                r["field_key"]: {k: r[k] for k in ("value_state", "value_source", "provenance_ref")}
+                for r in fields
+            },
         }
 
     async def call(self, run, b, name, args, job, worker):
@@ -509,7 +520,12 @@ class AgentService:
                     ],
                 }
             elif name == "read_revision":
-                result = {"revision": b["revision"], "orders": b["orders"]}
+                result = {
+                    "revision": b["revision"],
+                    "orders": b["orders"],
+                    "field_values": b["field_values"],
+                    "field_provenance": b["field_provenance"],
+                }
             elif name == "read_calculations":
                 if b["revision"]:
                     saved = b["revision"]["selection_manifest"]
