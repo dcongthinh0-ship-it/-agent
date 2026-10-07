@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { ApiFailure, getJson, postJson, type PatientInstance, type RegimenDetail, type Finding, type CandidateDetail } from './api'
 import { BlueprintDocument, type MedicationDraft } from './BlueprintDocument'
 import { AgentPanel } from './AgentPanel'
+import { DemoDeliveryPanel } from './DemoDeliveryPanel'
 import { rebaseValues } from './editor-conflict'
 import './patient-editor.css'
 
@@ -40,6 +41,7 @@ export function PatientEditor({ detail, mode, onClose, session, contextId, onSav
   const [conflictChoices, setConflictChoices] = useState<Record<string, 'local' | 'latest'>>({})
   const [readiness, setReadiness] = useState<Readiness | null>(null)
   const [readinessFailure, setReadinessFailure] = useState<string | null>(null)
+  const [demoMode, setDemoMode] = useState(false)
   const alive = useRef(true)
   const operation = useRef<{ body: string; key: string } | null>(null)
   const root = useRef<HTMLDivElement>(null)
@@ -47,6 +49,11 @@ export function PatientEditor({ detail, mode, onClose, session, contextId, onSav
   const issues: Finding[] = current?.issues || []
   const close = () => dirty ? setLeavePrompt(true) : onClose()
   useEffect(() => { alive.current = true; root.current?.querySelector<HTMLButtonElement>('button')?.focus(); return () => { alive.current = false } }, [])
+  useEffect(() => {
+    const controller = new AbortController()
+    void getJson<{ demo_mode?: boolean }>('/api/v1/status', controller.signal).then(value => { if (!controller.signal.aborted) setDemoMode(Boolean(value.demo_mode)) }).catch(() => {})
+    return () => controller.abort()
+  }, [])
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
       if (historical) return
@@ -67,11 +74,23 @@ export function PatientEditor({ detail, mode, onClose, session, contextId, onSav
   }, [dirty])
   useEffect(() => {
     setReadiness(null); setReadinessFailure(null)
-    if (section !== 'delivery' || !current?.revision_id || !contextId) return
+    if (demoMode || section !== 'delivery' || !current?.revision_id || !contextId) return
     const controller = new AbortController()
     void getJson<Readiness>(`/api/v1/contexts/${contextId}/instances/${current.instance_id}/hospital-readiness`, controller.signal).then(value => { if (!controller.signal.aborted) setReadiness(value) }).catch(error => { if (!controller.signal.aborted) setReadinessFailure(error instanceof ApiFailure ? error.message : '交付条件读取失败') })
     return () => controller.abort()
-  }, [section, current?.revision_id, current?.confirmed_revision_id, contextId])
+  }, [section, current?.revision_id, current?.confirmed_revision_id, contextId, demoMode])
+  const fillExample = async () => {
+    if (!current || !contextId || !editable || busy) return
+    setBusy(true); setFailure(null)
+    try {
+      const values = await getJson<{ field_values: Record<string, unknown>; medication_values: PatientInstance['medication_values'] }>(`/demo/contexts/${contextId}/instances/${current.instance_id}/example`)
+      if (!alive.current) return
+      setFieldValues(previous => ({ ...previous, ...Object.fromEntries(Object.entries(values.field_values).map(([key, value]) => [key, String(value)])) }))
+      setMedicationValues(previous => ({ ...previous, ...medicationFields({ ...current, medication_values: values.medication_values }) }))
+      setDirty(true); setNotice('已填入虚构演示值，请核对后保存。这些值仅用于演示流程。')
+    } catch (error) { if (alive.current) setFailure(error instanceof ApiFailure ? error.message : '演示值读取失败') }
+    finally { if (alive.current) setBusy(false) }
+  }
   const reload = async () => {
     const next = await getJson<PatientInstance>(`/api/v1/contexts/${contextId}/instances/${current?.instance_id}`)
     if (!alive.current) return
@@ -138,11 +157,12 @@ export function PatientEditor({ detail, mode, onClose, session, contextId, onSav
         {section === 'sources' && current && <section className="snapshot-facts"><h3>本次患者快照</h3><p>采集时间：{new Date(current.snapshot.captured_at).toLocaleString()}</p>{Object.entries(current.snapshot.facts).map(([key, fact]) => <div key={key}><strong>{({ patient_name: '患者姓名', disease: '疾病', disease_code: '疾病', pathology: '病理', pathology_code: '病理', height_cm: '身高', weight_kg: '体重', gfr_ml_min: '实测肾小球滤过率' } as Record<string, string>)[key] || key}</strong><span>{String(fact.value ?? '缺失')} {fact.unit || ''}</span><small>{fact.status === 'CONFIRMED' ? '来源已确认' : '需核对'} · {fact.source.namespace} / {fact.source.version}</small></div>)}<h3>固定依据</h3>{[...current.data_labels, ...current.safety_labels].map((finding, index) => <p key={index}>{finding.message}</p>)}<h3>程序计算</h3>{Object.entries(current.calculations).length ? Object.entries(current.calculations).map(([key, result]) => <CalculationResult key={key} label={detail.medications.find(item => item.item_key === key)?.source_drug_name || key} value={result} />) : <p>公式及测量有效期尚未确认，没有生成计算结果。</p>}</section>}
         {section === 'history' && current && <section className="revision-history"><h3>不可变修订记录</h3>{current.history.length ? current.history.map(item => <article key={item.id}><strong>第 {item.revision_no} 次修订</strong><time>{new Date(item.created_at).toLocaleString()}</time><p>{item.change_reason || '首次保存'}</p><small>{item.content_hash.slice(0, 16)}…</small><button disabled={busy} onClick={() => viewHistory(item.id)}>查看这次保存的完整表单</button></article>) : <p>尚未保存。本页编辑不会修改公共方案库。</p>}</section>}
         {section === 'review' && current && contextId && <AgentPanel contextId={contextId} kind="REVIEWER" revisionId={current.revision_id} initialRunId={reviewerRunId} />}
-        {section === 'delivery' && <section className="snapshot-facts"><h3>本地交付条件检查</h3><p>这里只检查已保存修订的准备情况，没有向院方发送预校验或医嘱请求。</p>{!current?.revision_id ? <p>先保存本次修订，再检查交付条件。</p> : readinessFailure ? <p role="alert">{readinessFailure}</p> : !readiness ? <p role="status">正在读取这次修订的条件…</p> : <>{readiness.checks.map(item => <p key={item.code}><strong>{item.state === 'SATISFIED' ? '已满足' : '待完成'}</strong> · {item.message}</p>)}<h3>逐条医嘱待配置项</h3>{readiness.lines.map(item => <article className="calculation-result" key={item.line_no}><strong>{item.line_no}. {item.name}</strong><p>{item.missing.map(key => ({ hospital_item_code: '院内项目编码', dose_value: '结构化实际剂量', dose_unit: '剂量单位', quantity: '开立数量', quantity_unit: '数量单位', route_code: '途径编码', frequency_code: '频次编码', start_day: '治疗起始日', long_term_flag: '长期或临时标记' } as Record<string, string>)[key] || '院方字段').join('、') || '仍需核对映射和提交权限'}</p></article>)}</>}</section>}
+        {section === 'delivery' && demoMode && current && contextId && <DemoDeliveryPanel contextId={contextId} instanceId={current.instance_id} revisionId={current.revision_id} confirmed={Boolean(current.revision_id && current.revision_id === current.confirmed_revision_id)} editable={editable && !dirty} />}
+        {section === 'delivery' && !demoMode && <section className="snapshot-facts"><h3>本地交付条件检查</h3><p>这里只检查已保存修订的准备情况，没有向院方发送预校验或医嘱请求。</p>{!current?.revision_id ? <p>先保存本次修订，再检查交付条件。</p> : readinessFailure ? <p role="alert">{readinessFailure}</p> : !readiness ? <p role="status">正在读取这次修订的条件…</p> : <>{readiness.checks.map(item => <p key={item.code}><strong>{item.state === 'SATISFIED' ? '已满足' : '待完成'}</strong> · {item.message}</p>)}<h3>逐条医嘱待配置项</h3>{readiness.lines.map(item => <article className="calculation-result" key={item.line_no}><strong>{item.line_no}. {item.name}</strong><p>{item.missing.map(key => ({ hospital_item_code: '院内项目编码', dose_value: '结构化实际剂量', dose_unit: '剂量单位', quantity: '开立数量', quantity_unit: '数量单位', route_code: '途径编码', frequency_code: '频次编码', start_day: '治疗起始日', long_term_flag: '长期或临时标记' } as Record<string, string>)[key] || '院方字段').join('、') || '仍需核对映射和提交权限'}</p></article>)}</>}</section>}
       </main>
       <aside className="editor-issues"><span className="editor-kicker">核对事项</span><h3>{current ? '保存与确认分开' : '公共方案查看'}</h3>{!current ? <p>这里呈现固定方案的完整表单。患者工作台选用后，在同一张表单中编辑本次方案。</p> : <><p>原文剂量作为参考。实际剂量由医生核对填写，医院编码不会自动补造。</p>{issues.map((issue, index) => <p key={issue.code}><span>{String(index + 1).padStart(2, '0')}</span>{issue.message}</p>)}{!issues.length && <p>保存后将列出本次方案的待核对事项。</p>}{editable && current.revision_id && <label className="change-reason">本次修改原因<textarea value={changeReason} onChange={event => setChangeReason(event.target.value)} placeholder="再次保存前填写修改原因" /></label>}</>}</aside>
     </div>
-    <footer className="editor-footer"><div><strong>{current ? '本次患者方案' : '公共固定表单'}</strong><span>{current ? '内部测试流程 · 尚未联通院方服务' : '查看不产生患者方案'}</span></div>{editable && <div className="editor-footer-actions"><button onClick={() => setSection('review')} disabled={busy || !current?.revision_id}>独立复核</button><button onClick={save} disabled={busy || (!dirty && Boolean(current?.revision_id)) || (Boolean(current?.revision_id) && !changeReason.trim())}>{busy ? '处理中…' : '保存本次修订'}</button><button className="editor-primary-action" onClick={() => { setAcknowledged([]); setConfirmPrompt(true) }} disabled={busy || dirty || !current?.revision_id || current.confirmed_revision_id === current.revision_id}>确认本次方案</button></div>}</footer>
+    <footer className="editor-footer"><div><strong>{current ? '本次患者方案' : '公共固定表单'}</strong><span>{current ? demoMode ? '虚构患者演示 · 本地模拟医院' : '内部测试流程 · 尚未联通院方服务' : '查看不产生患者方案'}</span></div>{editable && <div className="editor-footer-actions">{demoMode && <button onClick={fillExample} disabled={busy}>填入本例演示值</button>}<button onClick={() => setSection('review')} disabled={busy || !current?.revision_id}>独立复核</button><button onClick={save} disabled={busy || (!dirty && Boolean(current?.revision_id)) || (Boolean(current?.revision_id) && !changeReason.trim())}>{busy ? '处理中…' : '保存本次修订'}</button><button className="editor-primary-action" onClick={() => { setAcknowledged([]); setConfirmPrompt(true) }} disabled={busy || dirty || !current?.revision_id || current.confirmed_revision_id === current.revision_id}>确认本次方案</button></div>}</footer>
     {leavePrompt && <div className="editor-dialog-backdrop"><section className="editor-leave-dialog" role="alertdialog" aria-modal="true" aria-labelledby="leave-title"><h3 id="leave-title">本次修改尚未保存</h3><p>返回会离开本页，已保存修订保持可读取。</p><div><button onClick={() => setLeavePrompt(false)}>继续编辑</button><button className="danger" onClick={onClose}>放弃本次修改并返回</button></div></section></div>}
     {confirmPrompt && <div className="editor-dialog-backdrop"><section className="editor-confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title"><h3 id="confirm-title">确认已保存的这次修订</h3><p>请逐项核对。当前是内部测试确认，不会发送医嘱或产生院方成功回执。</p>{issues.map(issue => <label key={issue.code}><input type="checkbox" checked={acknowledged.includes(issue.code)} onChange={event => setAcknowledged(previous => event.target.checked ? [...previous, issue.code] : previous.filter(code => code !== issue.code))} />{issue.message}</label>)}{failure && <p role="alert">{failure}</p>}<div><button onClick={() => setConfirmPrompt(false)} disabled={busy}>继续核对</button><button onClick={confirm} disabled={busy || !issues.every(issue => acknowledged.includes(issue.code))}>确认这次修订</button></div></section></div>}
     {conflict && <div className="editor-dialog-backdrop"><section className="editor-confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="conflict-title"><h3 id="conflict-title">已有另一份更新的修订</h3><p>本地修改已保留。不同字段的修改可合并；同一字段被同时修改时，请逐项选择。选择后仍需重新保存。</p>{rebase?.collisions.map(item => <div className="edit-collision" key={item.key}><strong>{conflictLabel(item.key)}</strong><small>编辑前：{item.before || '空'}</small><label><input type="radio" name={item.key} checked={conflictChoices[item.key] === 'latest'} onChange={() => setConflictChoices(values => ({ ...values, [item.key]: 'latest' }))} />采用最新值：{item.latest || '空'}</label><label><input type="radio" name={item.key} checked={conflictChoices[item.key] === 'local'} onChange={() => setConflictChoices(values => ({ ...values, [item.key]: 'local' }))} />保留本地值：{item.local || '空'}</label></div>)}<div><button onClick={() => setConflict(null)}>返回保留本地修改</button><button onClick={() => applyRebase(false)}>加载最新修订</button><button disabled={Boolean(rebase?.unresolved.length)} onClick={() => applyRebase(true)}>核对并合并本地修改</button></div></section></div>}

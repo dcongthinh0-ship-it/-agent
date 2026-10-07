@@ -1,4 +1,5 @@
 export interface CapabilityStatus {
+  demo_mode?: boolean
   product: string
   mode: 'READ_ONLY_TEST' | 'WORKFLOW_TEST' | 'NOT_APPROVED'
   database: 'CONNECTED' | 'UNCONFIGURED' | 'UNAVAILABLE' | 'TEST_DOUBLE'

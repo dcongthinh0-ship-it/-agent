@@ -170,10 +170,10 @@ function App() {
     <div className="shell-content">
       <header className="topbar">
         <div className="breadcrumb"><span>化疗智能体</span><Icon name="chevron" size={14} /><strong>{{ catalog: '方案与证据浏览', workbench: '患者工作台', evidence: '知识与证据核对', operations: '运行管理' }[activeArea]}</strong></div>
-        <div className="topbar-right"><Badge tone="quiet">内部测试</Badge><span className="topbar-separator" /><span className="system-state"><span className={`status-dot ${status?.database === 'CONNECTED' ? 'is-on' : ''}`} />方案库{status?.database === 'CONNECTED' ? '已连接' : '未连接'}</span></div>
+        <div className="topbar-right"><Badge tone="quiet">{status?.demo_mode ? '虚构患者演示' : '内部测试'}</Badge><span className="topbar-separator" /><span className="system-state"><span className={`status-dot ${status?.database === 'CONNECTED' ? 'is-on' : ''}`} />方案库{status?.database === 'CONNECTED' ? '已连接' : '未连接'}</span></div>
       </header>
 
-      {activeArea === 'workbench' ? <ClinicalWorkbench key={`${contextId || 'no-context'}:${authGeneration}`} contextId={contextId} /> : activeArea === 'evidence' || activeArea === 'operations' ? <ManagementPage key={`${activeArea}:${authGeneration}`} area={activeArea} /> : <main>
+      {activeArea === 'workbench' ? <ClinicalWorkbench key={`${contextId || 'no-context'}:${authGeneration}`} contextId={contextId} demoMode={Boolean(status?.demo_mode)} /> : activeArea === 'evidence' || activeArea === 'operations' ? <ManagementPage key={`${activeArea}:${authGeneration}`} area={activeArea} /> : <main>
         <div className="page-intro">
           <div><p className="eyebrow">CATALOG REVIEW / 01</p><h1>方案与证据浏览<span className="title-mark">.</span></h1><p className="page-subtitle">核对固定版本与来源，当前不进行患者决策。</p></div>
           <div className="intro-side"><span className="intro-side-label">当前能力</span><strong>方案与证据 · 只读浏览</strong><span>模型、医院接口和临床推荐尚未接入</span></div>

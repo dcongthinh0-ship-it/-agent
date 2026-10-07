@@ -168,6 +168,7 @@ def create_app(
             hospital="CONFIGURED_NOT_VERIFIED"
             if config.hospital_adapter_config
             else "NOT_CONNECTED",
+            demo_mode=bool(getattr(request.app.state, "demo_mode", False)),
         )
 
     @app.get("/api/v1/contexts/{context_id}", response_model=None)

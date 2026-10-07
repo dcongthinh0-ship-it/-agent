@@ -21,10 +21,16 @@ from chemo_agent_product.security import BusinessError
 
 class Worker:
     def __init__(
-        self, pool: asyncpg.Pool, settings: Settings, reader: HospitalReader | None = None
+        self,
+        pool: asyncpg.Pool,
+        settings: Settings,
+        reader: HospitalReader | None = None,
+        *,
+        knowledge_loader=load_inputs,
     ):
         self.pool, self.settings = pool, settings
         self.reader = reader or ConfiguredHospitalReader(settings.hospital_adapter_config)
+        self.knowledge_loader = knowledge_loader
         self.owner = f"patient-worker:{uuid4()}"
         self.agent_handler = None
 
@@ -276,7 +282,7 @@ class Worker:
                 saved["id"],
             )
             disease = snapshot.facts.get("disease")
-            plans, manifest = await load_inputs(
+            plans, manifest = await self.knowledge_loader(
                 c,
                 str(disease.value) if disease and disease.status == "CONFIRMED" else "",
                 "TEST_ONLY",

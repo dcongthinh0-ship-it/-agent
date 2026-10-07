@@ -1,0 +1,523 @@
+"""Explicit demo entry point; the production application has no mock-hospital routes."""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import os
+import re
+import secrets
+import subprocess
+import time
+from contextlib import asynccontextmanager
+from datetime import datetime
+from pathlib import Path
+from typing import Annotated
+from urllib.parse import urlsplit, urlunsplit
+from uuid import UUID
+
+import asyncpg
+import uvicorn
+from fastapi import Depends, Request
+from fastapi.responses import HTMLResponse
+from pydantic import SecretStr
+
+from chemo_agent_product.api import create_app
+from chemo_agent_product.config import Settings
+from chemo_agent_product.database import insert
+from chemo_agent_product.demo_fixtures import DOCTORS, PATIENTS, hospital_read, read_profile, stamp
+from chemo_agent_product.demo_hospital import DemoHospital
+from chemo_agent_product.domain import FactRequirement, fingerprint
+from chemo_agent_product.hospital import READ_OPERATIONS
+from chemo_agent_product.hospital_contracts import REQUEST_CONTRACTS
+from chemo_agent_product.hospital_delivery import ConfiguredHospitalDelivery
+from chemo_agent_product.knowledge import load_inputs
+from chemo_agent_product.patient_api import principal
+from chemo_agent_product.security import BusinessError, Principal, issue_test_token
+from chemo_agent_product.worker import Worker
+
+PrincipalDep = Annotated[Principal, Depends(principal)]
+
+DATABASE = "chemo_demo_test_20261008"
+DOSES = {"帕妥珠单抗": "840 mg", "曲妥珠单抗": "480 mg", "多西他赛": "120 mg", "卡铂": "500 mg"}
+
+
+def fresh_demo_token(actor, signing_key):
+    return issue_test_token(
+        actor.model_copy(update={"expires_at": int(time.time()) + 86400}), signing_key
+    )
+
+
+async def demo_knowledge(c, disease, usage_mode):
+    plans, manifest = await load_inputs(c, disease, usage_mode)
+    for plan in plans:
+        plan.requirements = [
+            FactRequirement(fact_code=code, unit=unit, max_age_days=days)
+            for code, unit, days in [
+                ("height", "cm", 30),
+                ("weight", "kg", 30),
+                ("wbc", "10^9/L", 3),
+                ("anc", "10^9/L", 3),
+                ("platelets", "10^9/L", 3),
+                ("creatinine", "umol/L", 7),
+            ]
+        ]
+    manifest["demo_configuration"] = "DEMO_INPUTS_ONLY_NOT_CLINICAL_APPROVAL"
+    manifest["calculation"] = {
+        "bsa_formula_approved": True,
+        "measurement_max_age_days": 30,
+        "usage_mode": "DEMO_ONLY",
+        "source": "fictional demo fixture",
+    }
+    return plans, manifest
+
+
+async def setup(source_env: Path, state: Path, origin: str):
+    state.mkdir(parents=True, exist_ok=True)
+    source = Settings(_env_file=source_env)
+    if not source.database_url:
+        raise RuntimeError("source database must be configured")
+    parsed = urlsplit(source.database_url.get_secret_value())
+    if parsed.hostname not in {"localhost", "127.0.0.1"}:
+        raise RuntimeError("demo setup accepts only the local PostgreSQL source")
+    c = await asyncpg.connect(source.database_url.get_secret_value())
+    try:
+        if not await c.fetchval("SELECT 1 FROM pg_database WHERE datname=$1", DATABASE):
+            await c.execute("CREATE DATABASE " + DATABASE)
+            dumped = subprocess.run(
+                [
+                    "docker",
+                    "exec",
+                    "chemo-regimen-catalog-db",
+                    "pg_dump",
+                    "-U",
+                    parsed.username,
+                    "-Fc",
+                    "-d",
+                    parsed.path[1:],
+                ],
+                capture_output=True,
+                check=True,
+            ).stdout
+            restored = subprocess.run(
+                [
+                    "docker",
+                    "exec",
+                    "-i",
+                    "chemo-regimen-catalog-db",
+                    "pg_restore",
+                    "-U",
+                    parsed.username,
+                    "--no-owner",
+                    "--no-acl",
+                    "-d",
+                    DATABASE,
+                ],
+                input=dumped,
+                capture_output=True,
+            )
+            if restored.returncode:
+                raise RuntimeError("demo database restore failed; inspect the local PostgreSQL log")
+    finally:
+        await c.close()
+    config_path = state / "runtime.json"
+    runtime = (
+        json.loads(config_path.read_text())
+        if config_path.exists()
+        else {
+            "launch_signing_key": secrets.token_urlsafe(48),
+            "hospital_auth": secrets.token_urlsafe(48),
+        }
+    )
+    runtime["database_url"] = urlunsplit(parsed._replace(path="/" + DATABASE))
+    runtime["api_origin"] = origin
+    config_path.write_text(json.dumps(runtime))
+    config_path.chmod(0o600)
+    (state / "hospital-read.json").write_text(
+        json.dumps(read_profile(origin), ensure_ascii=False, indent=2)
+    )
+    (state / "hospital-delivery.json").write_text(
+        json.dumps(
+            {
+                "contract_version": "v1.0.1",
+                "hospital_code": "DEMO_HOSPITAL",
+                "credential_environment_variable": "CHEMO_DEMO_HOSPITAL_AUTH",
+                "operations": {
+                    name: {"url": f"{origin}/demo/hospital/{name}"} for name in REQUEST_CONTRACTS
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+    (state / "patients.json").write_text(json.dumps(PATIENTS, ensure_ascii=False, indent=2))
+    return source, runtime
+
+
+def create_demo_app(source, runtime, state, frontend):
+    if urlsplit(runtime["database_url"]).path != "/" + DATABASE or urlsplit(
+        runtime["database_url"]
+    ).hostname not in {"localhost", "127.0.0.1"}:
+        raise RuntimeError("refusing to run demo writes against a different database")
+    origin = runtime["api_origin"]
+    if urlsplit(origin).hostname != "127.0.0.1":
+        raise RuntimeError("demo hospital must be loopback-only")
+    if urlsplit(frontend).hostname not in {"127.0.0.1", "localhost"}:
+        raise RuntimeError("demo frontend must be loopback-only")
+    os.environ["CHEMO_DEMO_HOSPITAL_AUTH"] = runtime["hospital_auth"]
+    config = source.model_copy(
+        update={
+            "environment": "test",
+            "database_url": SecretStr(runtime["database_url"]),
+            "runtime_test_database_url": None,
+            "worker_enabled": False,
+            "launch_signing_key": SecretStr(runtime["launch_signing_key"]),
+            "trusted_host_origins": [origin],
+            "context_ttl_seconds": 86400,
+            "hospital_adapter_config": str(state / "hospital-read.json"),
+            "hospital_delivery_config": str(state / "hospital-delivery.json"),
+        }
+    )
+    app = create_app(config)
+    app.state.demo_mode = True
+    hospital = DemoHospital(state / "hospital.sqlite3")
+    delivery = ConfiguredHospitalDelivery(config.hospital_delivery_config)
+    original = app.router.lifespan_context
+    actor = None
+    dictionary = []
+
+    @asynccontextmanager
+    async def lifespan(app):
+        nonlocal actor, dictionary
+        async with original(app):
+            w = app.state.workflow
+            if not w:
+                raise RuntimeError("demo database has no runnable patient workflow")
+            async with w.pool.acquire() as c, c.transaction():
+                h = await c.fetchrow(
+                    "SELECT * FROM integration.hospital WHERE hospital_key='DEMO_20261008'"
+                )
+                if not h:
+                    h = await insert(
+                        c,
+                        "integration.hospital",
+                        dict(
+                            created_by_principal="demo-seed",
+                            hospital_key="DEMO_20261008",
+                            name="模拟医院（完全虚构）",
+                            contract_version="v1.0.1",
+                            adapter_profile_ref="DEMO_HTTP_V1",
+                            status="TEST_ONLY",
+                        ),
+                    )
+                staff = await c.fetchrow(
+                    "SELECT * FROM clinical.staff_reference "
+                    "WHERE hospital_id=$1 AND external_staff_id=$2",
+                    h["id"],
+                    "DEMO_DOC01",
+                )
+                if not staff:
+                    staff = await insert(
+                        c,
+                        "clinical.staff_reference",
+                        dict(
+                            created_by_principal="demo-seed",
+                            hospital_id=h["id"],
+                            external_staff_id="DEMO_DOC01",
+                        ),
+                    )
+                actor = Principal(
+                    subject="demo-workstation",
+                    hospital_id=h["id"],
+                    staff_id=staff["id"],
+                    roles=["DOCTOR", "KNOWLEDGE_REVIEWER", "OPERATOR"],
+                    expires_at=int(time.time()) + 86400,
+                )
+                dictionary = [
+                    {
+                        "dictionary_type": "DRUG",
+                        "item_code": "DEMO_DRUG_" + fingerprint(m["name"])[:12],
+                        "item_name": m["name"],
+                        "common_name": m["name"],
+                        "dose_unit": "mg",
+                        "order_unit": "演示包装",
+                        "status": "ENABLED",
+                        "route_code": "DEMO_IVPB",
+                        "frequency_code": "DEMO_ONCE",
+                        "execution_dept_code": "DEMO_ONC",
+                        "specification": "模拟规格，仅用于接口演示",
+                    }
+                    for m in await c.fetch(
+                        "SELECT DISTINCT source_drug_name AS name "
+                        "FROM regimen_catalog.regimen_medication_item"
+                    )
+                ]
+            worker = Worker(w.pool, config, knowledge_loader=demo_knowledge)
+            worker.agent_handler = app.state.agents.run_job
+            task = asyncio.create_task(worker.loop())
+            try:
+                yield
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+    app.router.lifespan_context = lifespan
+
+    @app.get("/demo/host", response_class=HTMLResponse)
+    async def host():
+        return (
+            Path(__file__)
+            .with_name("demo-host.html")
+            .read_text()
+            .replace("__FRONTEND__", frontend)
+            .replace("__PATIENTS__", json.dumps(PATIENTS, ensure_ascii=False))
+        )
+
+    @app.post("/demo/token")
+    async def token(request: Request):
+        body = await request.json()
+        if body.get("patient_id") not in PATIENTS or body.get("operator_id") != "DEMO_DOC01":
+            raise BusinessError("DEMO_SCOPE_ONLY", "仅接受演示病例和演示医师", 403)
+        return {"access_token": fresh_demo_token(actor, runtime["launch_signing_key"])}
+
+    @app.post("/demo/hospital/{name}")
+    async def simulated_hospital(name: str, request: Request):
+        if not secrets.compare_digest(
+            request.headers.get("Authorization", ""), runtime["hospital_auth"]
+        ):
+            raise BusinessError("DEMO_AUTH_REQUIRED", "模拟医院认证未通过", 401)
+        body = await request.json()
+        if name in READ_OPERATIONS:
+            pid, eid = body.get("patient_id"), body.get("encounter_id", "")
+            if pid not in PATIENTS or not eid.startswith("DEMO_E" + pid[-3:]):
+                raise BusinessError("DEMO_PATIENT_MISMATCH", "模拟医院患者与就诊不一致", 403)
+            return hospital_read(name, body, dictionary)
+        if name not in REQUEST_CONTRACTS:
+            raise BusinessError("UNKNOWN_OPERATION", "未定义的模拟院方操作", 404)
+        return {
+            "code": "0",
+            "msg": "模拟医院处理结果",
+            "demo": True,
+            "data": {"content": hospital.invoke(name, body)},
+        }
+
+    async def session(ctx, iid, p):
+        if p.hospital_id != actor.hospital_id:
+            raise BusinessError("DEMO_SCOPE_ONLY", "只允许演示医院上下文", 403)
+        w = app.state.workflow
+        value = await w.read_instance(p, ctx, iid)
+        if value["read_only"]:
+            raise BusinessError("DEMO_CONTEXT_STALE", "请使用本次患者快照下的方案", 409)
+        return value
+
+    @app.get("/demo/contexts/{ctx}/instances/{iid}/example")
+    async def example(ctx: UUID, iid: UUID, p: PrincipalDep):
+        value = await session(ctx, iid, p)
+        if value["template"]["regimen_code"] != "WFAH-BC-001":
+            raise BusinessError(
+                "DEMO_EXAMPLE_NOT_DEFINED", "本例示范填写值仅适用于BC-001，请自行填写其他方案", 422
+            )
+        return {
+            "demo": True,
+            "field_values": {
+                "current_cycle": 1,
+                "total_cycles": 6,
+                "treatment_date": datetime.now().date().isoformat(),
+                "treatment_time": "09:00",
+            },
+            "medication_values": {
+                m["item_key"]: {
+                    "actual_dose_text": DOSES[m["source_drug_name"]],
+                    "administration_day_text": "第1天",
+                    "instructions": "虚构演示医生填写值，不是临床剂量建议",
+                }
+                for m in value["template"]["medications"]
+            },
+        }
+
+    async def payload(ctx, iid, p):
+        value = await session(ctx, iid, p)
+        if not value["revision_id"] or value["revision_id"] != value["confirmed_revision_id"]:
+            raise BusinessError("CONFIRMATION_REQUIRED", "先保存并单独确认当前修订", 409)
+        if value["template"]["regimen_code"] != "WFAH-BC-001":
+            raise BusinessError(
+                "DEMO_MAPPING_NOT_DEFINED", "当前示范交付仅配置BC-001的四条主治疗药", 422
+            )
+        fields, orders = value["field_values"], []
+        for i, med in enumerate(value["template"]["medications"], 1):
+            edit = value["medication_values"].get(med["item_key"], {})
+            dose = re.fullmatch(
+                r"\s*(\d+(?:\.\d+)?)\s*mg\s*", edit.get("actual_dose_text", ""), re.I
+            )
+            if (
+                not dose
+                or float(dose[1]) <= 0
+                or edit.get("administration_day_text") not in {"第1天", "D1", "1"}
+            ):
+                raise BusinessError(
+                    "DEMO_ORDER_INCOMPLETE",
+                    "示范交付要求各药有正数mg剂量及第1天，复杂日程需另行配置",
+                    422,
+                )
+            orders.append(
+                {
+                    "line_no": i,
+                    "order_category": "MAIN_TREATMENT",
+                    "item_type": "DRUG",
+                    "drug_code": "DEMO_DRUG_" + fingerprint(med["source_drug_name"])[:12],
+                    "drug_name": med["source_drug_name"],
+                    "dose_value": dose[1],
+                    "dose_unit": "mg",
+                    "quantity": 1,
+                    "quantity_unit": "演示包装",
+                    "route_code": "DEMO_IVPB",
+                    "frequency_code": "DEMO_ONCE",
+                    "start_day": "1",
+                    "long_term_flag": "N",
+                    "execution_dept_code": "DEMO_ONC",
+                    "remark": "仅模拟主治疗药接口，数量/编码为虚构演示配置",
+                    "special_instructions": edit.get("instructions") or None,
+                }
+            )
+        async with app.state.workflow.pool.acquire() as c:
+            confirmed = await c.fetchval(
+                "SELECT max(acted_at) FROM clinical.doctor_action_event "
+                "WHERE instance_id=$1 AND revision_id=$2 AND action_type='CONFIRM'",
+                iid,
+                UUID(value["revision_id"]),
+            )
+        if not confirmed:
+            raise BusinessError("CONFIRMATION_MISSING", "确认记录缺失，请重新核对该修订", 409)
+        if not fields.get("treatment_date"):
+            raise BusinessError("TREATMENT_DATE_REQUIRED", "请填写治疗日期后另存并确认修订", 422)
+        # Stable times and keys ensure repeated clicks reuse the original hospital batch.
+        base = {
+            "patient_regimen_record_id": "DEMO_" + value["revision_id"],
+            "patient_id": value["snapshot"]["patient_ref"],
+            "encounter_id": value["snapshot"]["encounter_ref"],
+            "confirmed_regimen": {
+                "regimen_name": value["template"]["display_name"],
+                "decision_status": "CONFIRMED",
+                "confirmed_by": "DEMO_DOC01",
+                "confirmed_time": stamp(confirmed),
+                "regimen_code": "WFAH-BC-001",
+                "regimen_cycle_no": fields.get("current_cycle"),
+                "regimen_total_cycles": fields.get("total_cycles"),
+            },
+            "orders": orders,
+        }
+        return value, base
+
+    @app.get("/demo/contexts/{ctx}/instances/{iid}/delivery")
+    async def delivery_state(ctx: UUID, iid: UUID, p: PrincipalDep):
+        value = await session(ctx, iid, p)
+        return {
+            "demo": True,
+            "scope": "BC-001四条主治疗药示范交付",
+            **hospital.summary("DEMO_" + str(value["revision_id"])),
+        }
+
+    @app.post("/demo/contexts/{ctx}/instances/{iid}/delivery/{action}")
+    async def deliver(ctx: UUID, iid: UUID, action: str, p: PrincipalDep):
+        value, base = await payload(ctx, iid, p)
+        rid = base["patient_regimen_record_id"]
+        names = {
+            "validate": "B_ValidateChemoOrders",
+            "import": "B_ImportChemoOrders",
+            "query": "Q_GetRegimenHandoverStatus",
+            "cancel": "B_CancelRegimenHandover",
+            "archive": "B_ArchiveRegimenRecord",
+            "signature": "Q_GetRegimenArchiveStatus",
+        }
+        if action not in names:
+            raise BusinessError("UNKNOWN_ACTION", "未定义的模拟交付动作", 404)
+        if action == "validate":
+            body = {**base, "doctor_id": "DEMO_DOC01", "dept_code": "DEMO_ONC"}
+        elif action == "import":
+            body = {
+                **base,
+                "doctor_id": "DEMO_DOC01",
+                "dept_code": "DEMO_ONC",
+                "idempotency_key": rid + ":import",
+                "visit_type": "INPATIENT",
+                "regimen_version": str(value["template"]["version_id"]),
+                "data_version": value["revision_hash"],
+                "planned_start_time": value["field_values"]["treatment_date"].replace("-", "")
+                + "090000000",
+            }
+        elif action in {"query", "signature"}:
+            body = {"patient_regimen_record_id": rid}
+        elif action == "cancel":
+            body = {
+                "patient_regimen_record_id": rid,
+                "idempotency_key": rid + ":cancel",
+                "cancel_reason": "演示撤销",
+            }
+        else:
+            body = {
+                **base,
+                "idempotency_key": rid + ":archive",
+                "document_type": "DEMO_CHEMO_REGIMEN",
+                **DOCTORS,
+            }
+
+        async def observer(event):
+            if event["phase"] == "COMPLETED":
+                async with app.state.workflow.pool.acquire() as c, c.transaction():
+                    context = await app.state.workflow.scoped_context(c, ctx, p)
+                    await app.state.workflow.audit(
+                        c,
+                        p,
+                        context,
+                        "DEMO_HOSPITAL_CALL",
+                        iid,
+                        {
+                            k: str(event.get(k))
+                            for k in [
+                                "operation_name",
+                                "request_id",
+                                "request_hash",
+                                "response_hash",
+                                "transport_outcome",
+                                "http_status",
+                            ]
+                        },
+                    )
+
+        result, _ = await delivery.invoke(names[action], body, "DEMO_DOC01", observer=observer)
+        return {
+            "demo": True,
+            "operation": names[action],
+            "result": result.model_dump(mode="json", exclude_none=True),
+            "state": hospital.summary(rid),
+        }
+
+    return app
+
+
+async def run(args):
+    state = Path(args.state).resolve()
+    origin = f"http://127.0.0.1:{args.port}"
+    source, runtime = await setup(Path(args.source_env), state, origin)
+    app = create_demo_app(source, runtime, state, args.frontend)
+    print(
+        {
+            "demo_host": origin + "/demo/host",
+            "database": DATABASE,
+            "synthetic_patients": len(PATIENTS),
+        },
+        flush=True,
+    )
+    await uvicorn.Server(
+        uvicorn.Config(app, host="127.0.0.1", port=args.port, log_level="warning")
+    ).serve()
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--source-env", default=".env")
+    parser.add_argument("--state", default="../artifacts/demo-20261008")
+    parser.add_argument("--port", type=int, default=8012)
+    parser.add_argument("--frontend", default="http://127.0.0.1:5174")
+    asyncio.run(run(parser.parse_args()))

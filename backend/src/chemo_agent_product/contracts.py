@@ -14,6 +14,7 @@ class CapabilityStatus(BaseModel):
     hospital: Literal["NOT_CONNECTED", "CONFIGURED_NOT_VERIFIED"] = "NOT_CONNECTED"
     patient_context: Literal["NOT_CONNECTED", "TEST_ONLY"] = "NOT_CONNECTED"
     clinical_release: Literal["NOT_ENABLED"] = "NOT_ENABLED"
+    demo_mode: bool = False
 
 
 class RegimenSummary(BaseModel):
