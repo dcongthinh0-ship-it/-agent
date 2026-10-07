@@ -198,11 +198,16 @@ class PostgresCatalogReader:
         for key in ("source_locator", "disease_scope", "context_description"):
             item[key] = json.loads(item[key]) if item[key] else {}
         locator_keys = {
-            "sheet", "row_no", "pdf_page", "fragment_no",
-            "source_heading_raw", "source_disease_text",
+            "sheet",
+            "row_no",
+            "pdf_page",
+            "fragment_no",
+            "source_heading_raw",
+            "source_disease_text",
         }
         item["source_locator"] = {
-            key: value for key, value in item["source_locator"].items()
+            key: value
+            for key, value in item["source_locator"].items()
             if key in locator_keys and value is not None
         }
         return EvidenceDetail.model_validate(item)

@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     context_ttl_seconds: int = Field(default=1800, ge=60, le=86400)
     worker_poll_seconds: float = Field(default=1, ge=0.1, le=60)
     worker_lease_seconds: int = Field(default=180, ge=30, le=900)
+    worker_enabled: bool = True
 
     @property
     def read_enabled(self) -> bool:

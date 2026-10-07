@@ -99,7 +99,11 @@ def assess(
             continue
         data = []
         if not relation.pathology_unrestricted:
-            if pathology is None or pathology.status != "CONFIRMED" or pathology.value is None:
+            if not relation.pathology_codes:
+                data.append(
+                    Finding(code="PATHOLOGY_SCOPE_UNCONFIGURED", message="方案病理适用范围尚待核验")
+                )
+            elif pathology is None or pathology.status != "CONFIRMED" or pathology.value is None:
                 data.append(Finding(code="PATHOLOGY_UNCONFIRMED", message="病理信息尚待确认"))
             elif pathology.value not in relation.pathology_codes:
                 continue

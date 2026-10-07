@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from typing import Annotated
 from urllib.parse import urlsplit
@@ -21,7 +22,13 @@ from chemo_agent_product.contracts import (
     RegimenDetail,
     RegimenPage,
 )
+from chemo_agent_product.database import open_pool
+from chemo_agent_product.patient_api import principal as authenticated_principal
+from chemo_agent_product.patient_api import router as patient_router
 from chemo_agent_product.runtime import ContextReader, PostgresTestContextReader
+from chemo_agent_product.security import BusinessError
+from chemo_agent_product.worker import Worker
+from chemo_agent_product.workflow import Workflow
 
 
 def error(status: int, code: str, message: str) -> JSONResponse:
@@ -40,6 +47,8 @@ def create_app(
         app.state.reader = reader
         app.state.database_status = "TEST_DOUBLE" if reader else "UNCONFIGURED"
         app.state.context_reader = context_reader
+        app.state.workflow = None
+        worker_task = None
         app.state.context_status = (
             "TEST_ONLY" if context_reader and config.read_enabled else "NOT_CONNECTED"
         )
@@ -47,14 +56,18 @@ def create_app(
         runtime_pool: asyncpg.Pool | None = None
         if reader is None and config.database_url and config.read_enabled:
             try:
-                pool = await asyncpg.create_pool(
-                    dsn=config.database_url.get_secret_value(),
-                    min_size=1,
-                    max_size=4,
-                    command_timeout=6,
-                )
+                pool = await open_pool(config.database_url.get_secret_value())
                 app.state.reader = PostgresCatalogReader(pool)
                 app.state.database_status = "CONNECTED"
+                migrated = await pool.fetchval(
+                    "SELECT to_regclass('ops.product_migration') IS NOT NULL"
+                )
+                if migrated and config.launch_signing_key:
+                    app.state.workflow = Workflow(pool, config)
+                    app.state.context_status = "TEST_ONLY"
+                    if config.worker_enabled:
+                        worker = Worker(pool, config)
+                        worker_task = asyncio.create_task(worker.loop())
             except (OSError, asyncpg.PostgresError, TimeoutError):
                 # 健康状态保持可读，前端可以明确呈现数据库不可用。
                 app.state.database_status = "UNAVAILABLE"
@@ -74,21 +87,29 @@ def create_app(
         try:
             yield
         finally:
+            if worker_task:
+                worker_task.cancel()
+                await asyncio.gather(worker_task, return_exceptions=True)
             if pool is not None:
                 await pool.close()
             if runtime_pool is not None:
                 await runtime_pool.close()
 
-    app = FastAPI(title="化疗智能体只读 API", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="化疗智能体 API", version="0.2.0", lifespan=lifespan)
     app.state.settings = config
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"]
+        allow_origins=[
+            "http://127.0.0.1:5173",
+            "http://localhost:5173",
+            "http://127.0.0.1:5174",
+            *config.trusted_host_origins,
+        ]
         if config.read_enabled
         else [],
         allow_credentials=False,
-        allow_methods=["GET"],
-        allow_headers=["Accept", "Content-Type"],
+        allow_methods=["GET", "POST"],
+        allow_headers=["Accept", "Content-Type", "Authorization", "Idempotency-Key"],
     )
 
     async def get_reader(request: Request) -> CatalogReader | JSONResponse:
@@ -111,6 +132,10 @@ def create_app(
     async def database_error(_request: Request, _exc: asyncpg.PostgresError) -> JSONResponse:
         return error(503, "CATALOG_UNAVAILABLE", "方案目录查询失败，请稍后重试")
 
+    @app.exception_handler(BusinessError)
+    async def business_error(_request: Request, exc: BusinessError):
+        return error(exc.status, exc.code, exc.message)
+
     @app.get("/health/live")
     async def health() -> dict[str, str]:
         return {"status": "ok", "product": "化疗智能体"}
@@ -118,16 +143,28 @@ def create_app(
     @app.get("/api/v1/status", response_model=CapabilityStatus)
     async def status(request: Request) -> CapabilityStatus:
         return CapabilityStatus(
-            mode="READ_ONLY_TEST" if config.read_enabled else "NOT_APPROVED",
+            mode="WORKFLOW_TEST"
+            if request.app.state.workflow
+            else "READ_ONLY_TEST"
+            if config.read_enabled
+            else "NOT_APPROVED",
             database=request.app.state.database_status,
             patient_context=request.app.state.context_status,
+            model="CONFIGURED_NOT_VERIFIED" if config.model_configured else "NOT_CONNECTED",
+            hospital="CONFIGURED_NOT_VERIFIED"
+            if config.hospital_adapter_config
+            else "NOT_CONNECTED",
         )
 
-    @app.get("/api/v1/contexts/{context_id}", response_model=ContextReadout)
+    @app.get("/api/v1/contexts/{context_id}", response_model=None)
     async def context_readout(
         context_id: UUID,
+        request: Request,
         context: ContextReader | JSONResponse = Depends(get_context_reader),  # noqa: B008
     ) -> ContextReadout | JSONResponse:
+        if request.app.state.workflow:
+            who = await authenticated_principal(request, request.headers.get("Authorization"))
+            return await request.app.state.workflow.read_context(who, context_id)
         if isinstance(context, JSONResponse):
             return context
         result = await context.get_context(context_id)
@@ -179,6 +216,7 @@ def create_app(
         evidence = await reader.get_evidence(evidence_id)
         return evidence or error(404, "EVIDENCE_NOT_FOUND", "未找到该证据版本")
 
+    app.include_router(patient_router)
     return app
 
 
