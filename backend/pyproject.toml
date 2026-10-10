@@ -33,10 +33,8 @@ line-length = 100
 select = ["E", "F", "I", "UP", "B"]
 
 [tool.ruff.lint.per-file-ignores]
-# SQL strings keep each statement readable; Python is still formatted at 100 columns.
-"src/chemo_agent_product/workflow.py" = ["E501"]
-"src/chemo_agent_product/worker.py" = ["E501"]
-"src/chemo_agent_product/knowledge.py" = ["E501"]
-"src/chemo_agent_product/migrate.py" = ["E501"]
-"src/chemo_agent_product/agents.py" = ["E501"]
-"src/chemo_agent_product/word_layout.py" = ["E501"]
+# SQL remains readable in repositories and schema maintenance commands.
+"src/chemo_agent_product/**/repository.py" = ["E501"]
+"src/chemo_agent_product/**/*_repository.py" = ["E501"]
+"src/chemo_agent_product/entrypoints/migrate.py" = ["E501"]
+"src/chemo_agent_product/entrypoints/word_layout.py" = ["E501"]
