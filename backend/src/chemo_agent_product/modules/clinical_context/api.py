@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from chemo_agent_product.core.dependencies import CommandKey, PrincipalDep, WorkflowDep
 from chemo_agent_product.core.dependencies import principal as authenticated_principal
 from chemo_agent_product.core.http import error
+from chemo_agent_product.core.observability import context_id_var, safe_id
 from chemo_agent_product.core.read_dependencies import ContextReaderDep
 from chemo_agent_product.modules.clinical_context.schemas import (
     ContextReadout,
@@ -22,7 +23,9 @@ router = APIRouter(prefix="/api/v1")
 async def launch(
     request: LaunchInput, p: PrincipalDep, w: WorkflowDep, idempotency_key: CommandKey
 ):
-    return await w.launch(p, request, idempotency_key)
+    result = await w.launch(p, request, idempotency_key)
+    context_id_var.set(safe_id(result.get("context_id")))
+    return result
 
 
 @router.post("/contexts/{context_id}/refresh")

@@ -3,15 +3,62 @@ from __future__ import annotations
 import asyncio
 import importlib.metadata
 import json
+import logging
+import re
 import tempfile
 from pathlib import Path
+from time import perf_counter
 
 from chemo_agent_product.agent_runtime.contracts import AgentOutput
 from chemo_agent_product.agent_runtime.policy import TOOLS, prompt_path
 from chemo_agent_product.core.config import Settings
+from chemo_agent_product.core.observability import emit
 from chemo_agent_product.core.security import BusinessError
 
 "Claude Agent SDK boundary. No built-in tools, ambient skills, credentials or fake responses."
+
+logger = logging.getLogger(__name__)
+
+
+class StderrDiagnostics:
+    """Discard all free text; emit at most three classified status events per run."""
+
+    def __init__(self):
+        self.lines = 0
+
+    def __call__(self, line):
+        self.lines += 1
+        if self.lines > 3:
+            return
+        match = re.search(
+            r"(?:API Error:|HTTP status:)\s*(401|403|429|5\d{2})\b", line[:512], flags=re.IGNORECASE
+        )
+        status = int(match[1]) if match else None
+        diagnostic = (
+            "AUTH"
+            if status in {401, 403}
+            else "RATE_LIMIT"
+            if status == 429
+            else "UPSTREAM"
+            if status
+            else "UNCLASSIFIED"
+        )
+        emit(
+            logger,
+            "model_stderr",
+            level=logging.WARNING if status else logging.INFO,
+            http_status=status,
+            diagnostic=diagnostic,
+        )
+
+    def finish(self):
+        if self.lines:
+            emit(
+                logger,
+                "model_stderr_summary",
+                stderr_lines=self.lines,
+                suppressed_lines=max(0, self.lines - 3),
+            )
 
 
 def sdk_version():
@@ -22,7 +69,7 @@ class ClaudeAdapter:
     def __init__(self, settings: Settings):
         self.settings = settings
 
-    def options(self, kind, prompt, server, cwd):
+    def options(self, kind, prompt, server, cwd, stderr=None):
         from claude_agent_sdk import ClaudeAgentOptions, HookMatcher, PermissionResultDeny
 
         async def deny(name, args, context):
@@ -90,11 +137,11 @@ class ClaudeAdapter:
             max_budget_usd=config.model_max_budget_usd,
             output_format={"type": "json_schema", "schema": AgentOutput.model_json_schema()},
             include_partial_messages=False,
-            stderr=lambda line: None,
+            stderr=stderr or StderrDiagnostics(),
         )
 
     async def run(self, kind: str, input_payload: dict, dispatch):
-        from claude_agent_sdk import ClaudeSDKClient, ResultMessage, create_sdk_mcp_server, tool
+        from claude_agent_sdk import create_sdk_mcp_server, tool
         from mcp.types import ToolAnnotations
 
         definitions = []
@@ -144,13 +191,64 @@ class ClaudeAdapter:
                 )(bind(name))
             )
         server = create_sdk_mcp_server(name="clinical", version="1.0.0", tools=definitions)
+        started = perf_counter()
+        diagnostics = StderrDiagnostics()
+        emit(logger, "model_started", profile_kind=kind)
+        try:
+            return await self.receive(kind, input_payload, server, diagnostics)
+        except asyncio.CancelledError:
+            emit(
+                logger,
+                "model_cancelled",
+                profile_kind=kind,
+                duration_ms=round((perf_counter() - started) * 1000, 2),
+            )
+            raise
+        except Exception as exc:
+            emit(
+                logger,
+                "model_failed",
+                level=logging.ERROR,
+                exc=exc,
+                profile_kind=kind,
+                error_code=exc.code if isinstance(exc, BusinessError) else "MODEL_RUN_FAILED",
+                duration_ms=round((perf_counter() - started) * 1000, 2),
+            )
+            raise
+        finally:
+            diagnostics.finish()
+
+    async def receive(self, kind, input_payload, server, diagnostics):
+        from claude_agent_sdk import ClaudeSDKClient, ResultMessage
+
         with tempfile.TemporaryDirectory(prefix="chemo-agent-isolated-") as cwd:
-            options = self.options(kind, prompt_path(kind).read_text(), server, cwd)
+            options = self.options(kind, prompt_path(kind).read_text(), server, cwd, diagnostics)
             async with asyncio.timeout(self.settings.model_timeout_seconds):
                 async with ClaudeSDKClient(options=options) as client:
                     await client.query(json.dumps(input_payload, ensure_ascii=False, default=str))
                     async for message in client.receive_response():
                         if isinstance(message, ResultMessage):
+                            usage = message.usage or {}
+                            emit(
+                                logger,
+                                "model_completed",
+                                profile_kind=kind,
+                                status="FAILED"
+                                if message.is_error or message.structured_output is None
+                                else "SUCCEEDED",
+                                cost_usd=message.total_cost_usd,
+                                turns=message.num_turns,
+                                duration_ms=message.duration_ms,
+                                **{
+                                    key: usage.get(key)
+                                    for key in (
+                                        "input_tokens",
+                                        "output_tokens",
+                                        "cache_read_input_tokens",
+                                        "cache_creation_input_tokens",
+                                    )
+                                },
+                            )
                             if message.is_error or message.structured_output is None:
                                 raise BusinessError(
                                     "MODEL_OUTPUT_UNAVAILABLE", "模型未返回有效结构化结果", 502

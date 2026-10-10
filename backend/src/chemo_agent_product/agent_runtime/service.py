@@ -1,17 +1,22 @@
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
+from time import perf_counter
 from uuid import uuid4
 
 from chemo_agent_product.agent_runtime.contracts import AgentRequest
 from chemo_agent_product.agent_runtime.policy import TOOLS, prompt_path, validate_output
 from chemo_agent_product.core.domain import Reference, fingerprint
+from chemo_agent_product.core.observability import emit
 from chemo_agent_product.core.security import BusinessError
 from chemo_agent_product.integrations.model.claude import ClaudeAdapter, sdk_version
 
 from . import repository
 from .bindings import BindingLoader
 from .tools.service import ClinicalToolService
+
+logger = logging.getLogger(__name__)
 
 
 class AgentService:
@@ -218,10 +223,12 @@ class AgentService:
         return {"items": [dict(row) for row in rows]}
 
     async def run_job(self, job, worker):
+        started = perf_counter()
         async with self.pool.acquire() as c, c.transaction():
             await worker.fenced(c, job)
             run = await repository.get_locked_run(c, job["agent_run_id"])
             await repository.start_run(c, run["id"])
+        emit(logger, "agent_started", agent_run_id=run["id"], profile_kind=run["profile_kind"])
         try:
             if fingerprint(self.profile_payload(run["profile_kind"])) != run["config_hash"]:
                 raise BusinessError(
@@ -260,6 +267,13 @@ class AgentService:
                 )
                 await repository.complete_run(c, run["id"], usage)
                 await repository.complete_job(c, job["id"])
+            emit(
+                logger,
+                "agent_completed",
+                agent_run_id=run["id"],
+                profile_kind=run["profile_kind"],
+                duration_ms=round((perf_counter() - started) * 1000, 2),
+            )
         except Exception as exc:
             code = (
                 exc.code
@@ -267,6 +281,15 @@ class AgentService:
                 else "MODEL_TIMEOUT"
                 if isinstance(exc, TimeoutError)
                 else "MODEL_RUN_FAILED"
+            )
+            emit(
+                logger,
+                "agent_failed",
+                level=logging.ERROR,
+                exc=exc,
+                error_code=code,
+                agent_run_id=run["id"],
+                duration_ms=round((perf_counter() - started) * 1000, 2),
             )
             async with self.pool.acquire() as c, c.transaction():
                 await worker.fenced(c, job)

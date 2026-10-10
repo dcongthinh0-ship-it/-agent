@@ -9,7 +9,7 @@
 ├── backend/
 │   ├── src/chemo_agent_product/
 │   │   ├── entrypoints/              # 应用装配、迁移与表单布局维护命令
-│   │   ├── core/                     # 配置、认证、公共合同、幂等/审计和 HTTP 支持
+│   │   ├── core/                     # 配置、认证、公共合同、幂等/审计、安全日志和 HTTP 支持
 │   │   ├── modules/
 │   │   │   ├── clinical_context/      # 患者进入、刷新、范围与快照
 │   │   │   ├── regimen/               # 标准方案、固定版本与完整表单目录
@@ -18,6 +18,7 @@
 │   │   │   ├── knowledge/             # 适用关系、规则、证据与固定模板投影
 │   │   │   └── management/            # 授权知识和运行概览
 │   │   ├── agent_runtime/             # Agent 任务、绑定、策略与租约 Worker
+│   │   │   ├── supervision.py         # Worker 循环恢复、关闭与存活状态
 │   │   │   ├── tools/                 # 只读工具分派、范围校验和调用留痕
 │   │   │   └── prompts/               # 主 Agent / Reviewer 运行提示词
 │   │   ├── integrations/
@@ -80,7 +81,8 @@ flowchart TB
     UI -->|分业务 API 与内存凭据| API
     subgraph Backend[FastAPI 后端进程]
         API --> WF[Workflow 门面与业务服务]
-        Bootstrap[应用装配] -. 生命周期启动 .-> W[租约 Worker]
+        Bootstrap[应用装配] -. 生命周期启动 .-> Supervisor[Worker 看护]
+        Supervisor --> W[租约 Worker]
         W --> Prepare[患者准备服务]
         Prepare --> Reader[医院读取适配器]
         Prepare --> Match[纯匹配与参考计算]
@@ -105,6 +107,12 @@ flowchart TB
 ```
 
 仍然是一个 FastAPI 后端，Worker 由 API 生命周期启动；目录调整没有将它变成独立部署进程。任务保存在 PostgreSQL，通过租约领取、续租和恢复，未新增消息队列、ORM 或微服务。医院交付驱动存在，普通患者 API 仍仅提供本地准备检查。
+
+看护器对领取、执行结果写回等导致的循环异常及意外返回采用有上限的退避重启；正常进程关闭传递取消，不重新启动。续租更新为零或续租抛错时取消在途执行，保留数据库时钟租约恢复及原有围栏，旧执行者不写回新持有者状态。
+
+[安全日志](../backend/src/chemo_agent_product/core/observability.py)使用标准库 logging、ContextVar、字段/事件白名单和轮转文件；[请求中间件](../backend/src/chemo_agent_product/core/request_logging.py)只记录路由模板、服务端请求 ID、内部上下文 ID、状态和耗时。异常仅输出类型、产品代码位置和 SQLSTATE，不输出异常正文、局部变量、源码或 SQL 参数。SDK stderr 转为限量诊断类别和计数；框架/SDK 的任意自由文本也在输出前移除。业务审计继续独立落库。
+
+`/health/live` 检查进程，`/health/ready` 在两秒超时内只读探测数据库并检查必要 Worker 的存活/恢复状态；它不证明模型、院方或临床发布已验收。看护器不是操作系统进程守护器；API 进程退出仍由部署环境管理。
 
 ## 业务模块与代码入口
 

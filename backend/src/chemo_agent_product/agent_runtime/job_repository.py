@@ -5,7 +5,7 @@ import asyncpg
 
 async def expire_exhausted_jobs(c: asyncpg.Connection, *values):
     return await c.fetch(
-        "UPDATE ops.job SET status='DEAD_LETTER',last_error_code='LEASE_RECOVERY_EXHAUSTED'\n              WHERE status='RUNNING' AND lease_expires_at<clock_timestamp() AND attempt_count>=max_attempts RETURNING prepare_run_id,agent_run_id",
+        "UPDATE ops.job SET status='DEAD_LETTER',last_error_code='LEASE_RECOVERY_EXHAUSTED'\n              WHERE status='RUNNING' AND lease_expires_at<clock_timestamp() AND attempt_count>=max_attempts RETURNING id,prepare_run_id,agent_run_id",
         *values,
     )
 
@@ -69,5 +69,15 @@ async def schedule_job_outcome(c: asyncpg.Connection, *values):
 async def fail_preparation(c: asyncpg.Connection, *values):
     return await c.execute(
         "UPDATE clinical.prepare_run SET status=$2,error_code=$3,error_summary=$4,completed_at=now() WHERE id=$1 AND status<>'SUPERSEDED'",
+        *values,
+    )
+
+
+async def get_job_diagnostics(c: asyncpg.Connection, *values):
+    return await c.fetchrow(
+        "SELECT j.status,j.last_error_code,coalesce(p.launch_context_id,d.launch_context_id) AS context_id "
+        "FROM ops.job j LEFT JOIN clinical.prepare_run p ON p.id=j.prepare_run_id "
+        "LEFT JOIN agent.agent_run a ON a.id=j.agent_run_id "
+        "LEFT JOIN clinical.decision_run d ON d.id=a.decision_run_id WHERE j.id=$1",
         *values,
     )

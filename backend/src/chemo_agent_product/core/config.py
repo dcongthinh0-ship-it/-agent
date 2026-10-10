@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Literal
 
 from pydantic import Field, SecretStr
@@ -32,6 +33,12 @@ class Settings(BaseSettings):
     worker_poll_seconds: float = Field(default=1, ge=0.1, le=60)
     worker_lease_seconds: int = Field(default=180, ge=30, le=900)
     worker_enabled: bool = True
+    worker_restart_max_seconds: float = Field(default=30, ge=1, le=300)
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    log_directory: Path | None = Path("logs")
+    log_to_file: bool = True
+    log_max_bytes: int = Field(default=10_485_760, ge=1024, le=104_857_600)
+    log_backup_count: int = Field(default=5, ge=1, le=30)
 
     @property
     def read_enabled(self) -> bool:

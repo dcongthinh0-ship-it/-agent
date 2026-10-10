@@ -33,7 +33,8 @@ flowchart LR
 | --- | --- | --- |
 | 医生页面与挂件 | React、TypeScript、Vite；宿主上下文、候选、表单和修订交互 | [frontend/src](frontend/src/)、[chemo-widget.js](frontend/public/chemo-widget.js) |
 | 业务 API | FastAPI、Pydantic；身份范围、合同、幂等和业务事务 | [api.py](backend/src/chemo_agent_product/entrypoints/api.py)、[workflow.py](backend/src/chemo_agent_product/modules/clinical_context/workflow.py) |
-| 后台任务 | API 进程内的异步 Worker；PostgreSQL 队列、租约、恢复和旧任务隔离 | [worker.py](backend/src/chemo_agent_product/agent_runtime/worker.py) |
+| 后台任务 | API 进程内的异步 Worker；PostgreSQL 队列、租约、恢复、续租失效取消和循环看护 | [worker.py](backend/src/chemo_agent_product/agent_runtime/worker.py)、[supervision.py](backend/src/chemo_agent_product/agent_runtime/supervision.py) |
+| 运行诊断 | 白名单 JSON 日志、请求/任务关联、轮转与就绪检查 | [日志与查看方式](docs/development.md#运行日志与-worker-看护) |
 | 数据与知识 | PostgreSQL；方案版本、证据、快照、患者修订和审计 | [数据模型](docs/data-model.md)、[增量迁移](backend/migrations/) |
 | 模型与院方适配 | Claude Agent SDK、只读 MCP、HTTP 读取及交付合同 | [接入说明](docs/integrations.md) |
 

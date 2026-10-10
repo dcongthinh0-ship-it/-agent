@@ -88,3 +88,18 @@ def test_runtime_prompts_are_packaged_at_the_policy_boundary():
         assert path.is_file()
         assert path.parent == PACKAGE / "agent_runtime/prompts"
         assert path.read_text().strip()
+
+
+def test_product_error_codes_are_in_the_diagnostic_allowlist():
+    from chemo_agent_product.core.observability import ERROR_CODES
+
+    for path in PACKAGE.rglob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "BusinessError"
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+            ):
+                assert node.args[0].value in ERROR_CODES, str(path.relative_to(PACKAGE))

@@ -13,3 +13,6 @@ __pycache__/
 .mypy_cache/
 artifacts/
 *.dump
+logs/
+*.log
+*.jsonl

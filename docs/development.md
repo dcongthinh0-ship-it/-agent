@@ -52,6 +52,7 @@ cp -n .env.example .env
 | 兼容读取 | `CHEMO_PRODUCT_RUNTIME_TEST_DATABASE_URL` | 可选的独立只读测试上下文来源，不能与目录连接相同 |
 | 宿主身份 | `CHEMO_PRODUCT_LAUNCH_SIGNING_KEY`、`CHEMO_PRODUCT_TRUSTED_HOST_ORIGINS` | 本地测试签名和可信来源 |
 | 生命周期 | `CHEMO_PRODUCT_CONTEXT_TTL_SECONDS`、Worker 配置 | 上下文有效期、轮询与租约 |
+| 运行日志 | `CHEMO_PRODUCT_LOG_*` | 级别、目录、文件开关、单文件大小和保留份数 |
 | 模型 | `CHEMO_PRODUCT_MODEL_*`、`CHEMO_PRODUCT_REVIEWER_MODEL_NAME` | 启用、认证、协议地址、模型与执行限制 |
 | 医院 | `CHEMO_PRODUCT_HOSPITAL_ADAPTER_CONFIG`、`CHEMO_PRODUCT_HOSPITAL_DELIVERY_CONFIG` | 指向已核对的本地读取/交付配置 |
 
@@ -74,6 +75,39 @@ npm run dev
 默认访问 `http://127.0.0.1:5173/`。`/catalog` 是公共目录，`/` 等待可信工作站上下文；手工填写 context UUID 不会取得合法患者身份。知识与运行页面分别需要对应角色。
 
 前端默认将 `/api` 代理到 `http://127.0.0.1:8011`。独立工作目录可设置 `CHEMO_API_ORIGIN` 指向其后端，配置见 [vite.config.ts](../frontend/vite.config.ts)；修改 origin 同时核对宿主可信来源和凭据范围。
+
+## 运行日志与 Worker 看护
+
+从 `backend/` 启动 API 后，日志同时输出到终端和 `logs/<environment>.jsonl`。默认本地文件为 `logs/local.jsonl`；测试使用 `logs/test.jsonl`，独立版本使用其自身目录和配置。本次未修改独立版本。文件达到 10 MiB 轮转，默认保留 5 份历史文件；日志已加入 Git 忽略。
+
+```sh
+cd backend
+tail -f logs/local.jsonl
+```
+
+每行是一条 JSON，时间使用 UTC。查看 Worker 故障和恢复：
+
+```sh
+rg '"event":"(worker_loop_failed|worker_restart|heartbeat_failed|lease_lost|job_failed|job_dead_letter)"' logs/local.jsonl*
+```
+
+接口响应带服务端生成的 `X-Request-ID`；从浏览器网络面板取得该值，再检索：
+
+```sh
+rg --fixed-strings '替换为响应中的请求ID' logs/local.jsonl*
+```
+
+请求与后台任务通过内部 `context_id` 关联；后台还记录 `job_id`、准备/Agent 运行 ID。可以检索这些内部 UUID。日志不记录姓名、院方患者/就诊编号、病历、患者字段值、请求/响应正文、查询参数、Authorization、Token、密钥、完整 URL、原始异常或 SDK stderr。未列入白名单的字段直接丢弃，未知错误码显示 `UNCLASSIFIED`；新增产品错误码需同步日志白名单。SDK stderr 每次运行最多输出 3 条类别/状态诊断，结尾记录总数与抑制数。
+
+默认 `INFO` 记录领取、结果、失败和恢复；设 `CHEMO_PRODUCT_LOG_LEVEL=DEBUG` 后也记录成功续租。看护器按 1、2、4……秒退避，默认上限 30 秒，可用 `CHEMO_PRODUCT_WORKER_RESTART_MAX_SECONDS` 调整。续租失败取消当前执行并等待数据库租约到期恢复，不主动改写其他执行者状态。正常关闭同时取消执行和续租。
+
+```sh
+curl -i http://127.0.0.1:8011/health/ready
+```
+
+数据库探测失败或必要 Worker 未运行/正在恢复时返回 503；就绪时返回 200。`/health/live` 仅检查进程。启动时数据库未连上不会自动创建连接池或补齐配置，需修复连接后重启 API；循环运行中的故障由看护器恢复。
+
+文件输出可用 `CHEMO_PRODUCT_LOG_TO_FILE=false` 关闭，供部署环境集中采集标准输出。标准库文件轮转适用于单进程；多进程部署应使用集中日志采集或分别配置目录。模型日志只输出 SDK 实际提供的费用、轮数、耗时和数值用量，不把本地合同测试当作真实模型计费验收。
 
 ## 环境与数据隔离
 
@@ -126,4 +160,4 @@ npm run build
 | 保存冲突 | 当前实例行版本与基准修订，保留本地编辑后合并 |
 | 医院写请求超时 | 原记录的回查状态；不重复创建新批次 |
 
-`/health/live` 只证明进程活着，`/api/v1/status` 和授权运行概览才提供组件状态；二者均不能替代外部联通验收。
+`/health/live` 只证明进程活着；`/health/ready` 检查数据库与 Worker；`/api/v1/status` 和授权运行概览提供配置及业务状态。这些检查均不能替代外部联通验收。
