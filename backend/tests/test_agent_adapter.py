@@ -2,9 +2,9 @@ import json
 from uuid import uuid4
 
 import pytest
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 
-from chemo_agent_product.agent_adapter import TOOLS, ClaudeAdapter, validate_output
+from chemo_agent_product.agent_adapter import TOOLS, AgentOutput, ClaudeAdapter, validate_output
 from chemo_agent_product.config import Settings
 from chemo_agent_product.domain import Reference
 from chemo_agent_product.security import BusinessError
@@ -131,6 +131,21 @@ async def test_large_bound_results_advertise_inline_limit_on_mcp_wire(monkeypatc
 def test_missing_model_never_returns_fixed_agent_text():
     with pytest.raises(BusinessError, match="MODEL_NOT_CONFIGURED"):
         ClaudeAdapter(Settings()).options("RECOMMENDATION", "contract", {}, "/tmp")
+
+
+def test_summary_sources_are_required_by_sdk_schema_and_output_contract():
+    schema = AgentOutput.model_json_schema()
+    assert "summary_source_refs" in schema["required"]
+    assert schema["properties"]["summary_source_refs"]["minItems"] == 1
+    item = payload()
+    del item["summary_source_refs"]
+    with pytest.raises(ValidationError):
+        validate_output(item, "RECOMMENDATION", [REF], [], set())
+    item["summary_source_refs"] = []
+    with pytest.raises(ValidationError):
+        validate_output(item, "RECOMMENDATION", [REF], [], set())
+    item["summary_source_refs"] = [REF.model_dump(mode="json")]
+    assert validate_output(item, "RECOMMENDATION", [REF], [], set()).summary_source_refs == [REF]
 
 
 def test_unknown_reference_and_out_of_range_quote_rejected():

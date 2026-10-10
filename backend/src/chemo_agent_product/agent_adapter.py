@@ -44,7 +44,7 @@ class AgentOutput(Contract):
     schema_version: Literal["agent-output.v1"] = "agent-output.v1"
     kind: Literal["RECOMMENDATION", "REVIEWER"]
     summary: str = Field(max_length=4000)
-    summary_source_refs: list[Reference] = Field(default_factory=list, max_length=50)
+    summary_source_refs: list[Reference] = Field(min_length=1, max_length=50)
     statements: list[Statement] = Field(default_factory=list, max_length=100)
     findings: list[ReviewFinding] = Field(default_factory=list, max_length=100)
     proposed_facts: list[FactProposal] = Field(default_factory=list, max_length=100)
