@@ -9,7 +9,7 @@ description = "化疗智能体患者流程、方案表单与受控 Agent 服务"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "asyncpg>=0.30,<1",
-  "claude-agent-sdk>=0.1,<1",
+  "claude-agent-sdk>=0.2.164,<1",
   "fastapi>=0.115,<1",
   "httpx>=0.28,<1",
   "pydantic-settings>=2.7,<3",

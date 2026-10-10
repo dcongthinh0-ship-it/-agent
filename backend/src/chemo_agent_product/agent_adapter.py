@@ -1,4 +1,4 @@
-"""Claude Agent SDK boundary. No built-in tools, ambient skills, credentials or fake responses."""
+"""Claude Agent SDK boundary without environment access, ambient skills or fake responses."""
 
 from __future__ import annotations
 
@@ -119,6 +119,9 @@ class ClaudeAdapter:
     def options(self, kind, prompt, server, cwd):
         from claude_agent_sdk import ClaudeAgentOptions, HookMatcher, PermissionResultDeny
 
+        # SDK final JSON delivery is separate from access to the environment.
+        allowed_tools = [f"mcp__clinical__{name}" for name in TOOLS] + ["StructuredOutput"]
+
         async def deny(name, args, context):
             return PermissionResultDeny(
                 message="Only the bound clinical read tools are permitted", interrupt=True
@@ -126,12 +129,14 @@ class ClaudeAdapter:
 
         async def restrict(input_data, tool_use_id, context):
             name = input_data.get("tool_name")
-            if name not in {f"mcp__clinical__{tool}" for tool in TOOLS}:
+            if name not in allowed_tools:
                 return {
                     "hookSpecificOutput": {
                         "hookEventName": "PreToolUse",
                         "permissionDecision": "deny",
-                        "permissionDecisionReason": "Only bound clinical tools are permitted",
+                        "permissionDecisionReason": (
+                            "Only bound clinical tools and structured output are permitted"
+                        ),
                     }
                 }
             return {}
@@ -153,7 +158,7 @@ class ClaudeAdapter:
             env["ANTHROPIC_BASE_URL"] = config.model_base_url
         return ClaudeAgentOptions(
             tools=[],
-            allowed_tools=[f"mcp__clinical__{name}" for name in TOOLS],
+            allowed_tools=allowed_tools,
             disallowed_tools=[
                 "Bash",
                 "Read",
@@ -188,8 +193,13 @@ class ClaudeAdapter:
         )
 
     async def run(self, kind: str, input_payload: dict, dispatch):
-        from claude_agent_sdk import ClaudeSDKClient, ResultMessage, create_sdk_mcp_server, tool
-        from mcp.types import ToolAnnotations
+        from claude_agent_sdk import (
+            ClaudeSDKClient,
+            ResultMessage,
+            ToolAnnotations,
+            create_sdk_mcp_server,
+            tool,
+        )
 
         definitions = []
         descriptions = {
@@ -233,7 +243,11 @@ class ClaudeAdapter:
 
             definitions.append(
                 tool(
-                    name, descriptions[name], schema, annotations=ToolAnnotations(readOnlyHint=True)
+                    name,
+                    descriptions[name],
+                    schema,
+                    # Keep bound results inline; the Agent cannot read SDK spill files.
+                    annotations=ToolAnnotations(readOnlyHint=True, maxResultSizeChars=300_000),
                 )(bind(name))
             )
         server = create_sdk_mcp_server(name="clinical", version="1.0.0", tools=definitions)

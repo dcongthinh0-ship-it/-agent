@@ -486,10 +486,26 @@ class ContractAgentAdapter:
         await dispatch("read_snapshot", {})
         candidates = await dispatch("read_candidates", {})
         if candidates["items"]:
-            await dispatch("read_plan", {"candidate_id": str(candidates["items"][0]["id"])})
+            plan = await dispatch("read_plan", {"candidate_id": str(candidates["items"][0]["id"])})
+            assert plan["ref"] == {
+                "namespace": "catalog_bridge.template_version_reference",
+                "id": str(plan["projection_id"]),
+                "version": "template-projection.v1",
+                "content_hash": plan["template_hash"],
+            }
+            assert "word_layout" not in plan["template_payload"]
         await dispatch("read_rules", {})
         await dispatch("read_calculations", {})
-        await dispatch("read_revision", {})
+        revision = await dispatch("read_revision", {})
+        if payload.get("revision_id"):
+            assert revision["ref"] == {
+                "namespace": "clinical.patient_regimen_revision",
+                "id": payload["revision_id"],
+                "version": str(revision["revision"]["revision_no"]),
+                "content_hash": payload["revision_hash"],
+            }
+        else:
+            assert revision["ref"] is None
         await dispatch("search_knowledge", {"query": "HER2"})
         refs = payload["knowledge_manifest"].get("evidence", [])
         if refs:

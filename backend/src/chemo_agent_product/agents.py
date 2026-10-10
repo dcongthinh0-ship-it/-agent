@@ -16,6 +16,22 @@ from chemo_agent_product.patient_contracts import AgentRequest
 from chemo_agent_product.security import BusinessError
 
 
+def plan_for_agent(row):
+    """Keep clinical content and its fixed reference, without duplicate Word geometry."""
+    return {
+        **row,
+        "template_payload": {
+            k: v for k, v in row["template_payload"].items() if k != "word_layout"
+        },
+        "ref": Reference(
+            namespace="catalog_bridge.template_version_reference",
+            id=str(row["projection_id"]),
+            version="template-projection.v1",
+            content_hash=row["template_hash"],
+        ).model_dump(mode="json"),
+    }
+
+
 class AgentService:
     def __init__(self, workflow, adapter=None):
         self.workflow = workflow
@@ -506,7 +522,7 @@ class AgentService:
                 row = b["candidates"].get(UUID(args["candidate_id"]))
                 if not row:
                     raise BusinessError("TOOL_SCOPE_DENIED", "方案不属于本次候选", 403)
-                result = row
+                result = plan_for_agent(row)
             elif name == "read_evidence":
                 result = b["evidence"].get(str(UUID(args["evidence_id"])))
                 if not result:
@@ -522,6 +538,14 @@ class AgentService:
             elif name == "read_revision":
                 result = {
                     "revision": b["revision"],
+                    "ref": Reference(
+                        namespace="clinical.patient_regimen_revision",
+                        id=str(b["revision"]["id"]),
+                        version=str(b["revision"]["revision_no"]),
+                        content_hash=b["revision"]["content_hash"],
+                    ).model_dump(mode="json")
+                    if b["revision"]
+                    else None,
                     "orders": b["orders"],
                     "field_values": b["field_values"],
                     "field_provenance": b["field_provenance"],

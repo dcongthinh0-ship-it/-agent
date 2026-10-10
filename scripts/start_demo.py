@@ -15,6 +15,32 @@ STATE = ROOT / "artifacts" / "demo-20261008"
 processes = []
 
 
+def model_environment(path=None):
+    """Load this workstation's private model configuration, never database overrides."""
+    env = os.environ.copy()
+    path = path or STATE / "model-settings.json"
+    if not path.exists():
+        return env
+    values = json.loads(path.read_text())
+    allowed = {
+        "CHEMO_PRODUCT_MODEL_ENABLED",
+        "CHEMO_PRODUCT_MODEL_API_KEY",
+        "CHEMO_PRODUCT_MODEL_BASE_URL",
+        "CHEMO_PRODUCT_MODEL_NAME",
+        "CHEMO_PRODUCT_REVIEWER_MODEL_NAME",
+        "CHEMO_PRODUCT_MODEL_TIMEOUT_SECONDS",
+        "CHEMO_PRODUCT_MODEL_MAX_TURNS",
+        "CHEMO_PRODUCT_MODEL_MAX_BUDGET_USD",
+        "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+    }
+    if not isinstance(values, dict) or any(
+        key not in allowed or not isinstance(value, str) for key, value in values.items()
+    ):
+        raise RuntimeError("独立模型配置只接受模型环境变量及字符串值，不允许数据库或身份配置。")
+    env.update(values)
+    return env
+
+
 def occupied(port):
     with socket.socket() as probe:
         probe.settimeout(0.5)
@@ -32,6 +58,14 @@ def same_workspace(origin):
         return runtime == {"workspace": str(ROOT), "database": "chemo_demo_test_20261008"}
     except (OSError, ValueError):
         return False
+
+
+def wait_for_backend(deadline):
+    # An existing Vite proxy cannot identify its workspace while its backend restarts.
+    while not same_workspace("http://127.0.0.1:8012"):
+        if time.monotonic() >= deadline or any(p.poll() is not None for p in processes):
+            raise RuntimeError("工作站后端尚未就绪，请查看本目录启动日志。")
+        time.sleep(0.25)
 
 
 def stop(*_args):
@@ -54,6 +88,7 @@ def launch(args, folder, filename, env=None):
 
 def main():
     STATE.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + 60
     if occupied(8012):
         if not same_workspace("http://127.0.0.1:8012"):
             raise RuntimeError("8012已被其他工作目录的服务占用，请检查后重试；本脚本不会停止它。")
@@ -70,7 +105,9 @@ def main():
             ],
             ROOT / "backend",
             "backend.log",
+            model_environment(),
         )
+    wait_for_backend(deadline)
     if occupied(5174):
         if not same_workspace("http://127.0.0.1:5174"):
             raise RuntimeError("5174已被其他页面占用，请检查后重试；本脚本不会停止它。")
@@ -81,7 +118,6 @@ def main():
             "frontend.log",
             {**os.environ, "CHEMO_API_ORIGIN": "http://127.0.0.1:8012"},
         )
-    deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
         if any(p.poll() is not None for p in processes):
             raise RuntimeError(f"工作站启动失败，请查看 {STATE} 中的日志。")
