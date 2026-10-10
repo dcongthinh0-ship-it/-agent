@@ -3,6 +3,7 @@ from __future__ import annotations
 from uuid import UUID
 
 from chemo_agent_product.agent_runtime.policy import TOOLS
+from chemo_agent_product.core.domain import Reference
 from chemo_agent_product.core.security import BusinessError
 
 
@@ -49,6 +50,14 @@ def read_bound_tool(run, b, name, args, initial_fields):
     elif name == "read_revision":
         result = {
             "revision": b["revision"],
+            "ref": Reference(
+                namespace="clinical.patient_regimen_revision",
+                id=str(b["revision"]["id"]),
+                version=str(b["revision"]["revision_no"]),
+                content_hash=b["revision"]["content_hash"],
+            ).model_dump(mode="json")
+            if b["revision"]
+            else None,
             "orders": b["orders"],
             "field_values": b["field_values"],
             "field_provenance": b["field_provenance"],

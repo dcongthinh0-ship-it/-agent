@@ -15,7 +15,7 @@ from chemo_agent_product.core.config import Settings
 from chemo_agent_product.core.observability import emit
 from chemo_agent_product.core.security import BusinessError
 
-"Claude Agent SDK boundary. No built-in tools, ambient skills, credentials or fake responses."
+"Claude Agent SDK boundary. No environment tools, ambient skills, credentials or fake responses."
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +72,10 @@ class ClaudeAdapter:
     def options(self, kind, prompt, server, cwd, stderr=None):
         from claude_agent_sdk import ClaudeAgentOptions, HookMatcher, PermissionResultDeny
 
+        # The SDK uses this internal tool to deliver output_format results.
+        # It grants no environment access; application output validation still applies.
+        allowed_tools = [f"mcp__clinical__{name}" for name in TOOLS] + ["StructuredOutput"]
+
         async def deny(name, args, context):
             return PermissionResultDeny(
                 message="Only the bound clinical read tools are permitted", interrupt=True
@@ -79,12 +83,14 @@ class ClaudeAdapter:
 
         async def restrict(input_data, tool_use_id, context):
             name = input_data.get("tool_name")
-            if name not in {f"mcp__clinical__{tool}" for tool in TOOLS}:
+            if name not in allowed_tools:
                 return {
                     "hookSpecificOutput": {
                         "hookEventName": "PreToolUse",
                         "permissionDecision": "deny",
-                        "permissionDecisionReason": "Only bound clinical tools are permitted",
+                        "permissionDecisionReason": (
+                            "Only bound clinical tools and structured output are permitted"
+                        ),
                     }
                 }
             return {}
@@ -106,7 +112,7 @@ class ClaudeAdapter:
             env["ANTHROPIC_BASE_URL"] = config.model_base_url
         return ClaudeAgentOptions(
             tools=[],
-            allowed_tools=[f"mcp__clinical__{name}" for name in TOOLS],
+            allowed_tools=allowed_tools,
             disallowed_tools=[
                 "Bash",
                 "Read",

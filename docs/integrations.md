@@ -100,10 +100,12 @@ iframe 使用 `CHEMO_READY` / `CHEMO_CONTEXT`、版本 `1` 交换上下文。宿
 | `read_evidence` | 本次知识清单允许的指定证据 |
 | `read_rules` | 固定规则结果与知识清单 |
 | `read_calculations` | 受控参考计算或保存修订中的计算记录 |
-| `read_revision` | 本次 Reviewer 绑定的确切修订、字段与药物行 |
+| `read_revision` | 本次 Reviewer 绑定的确切修订、字段与药物行；`ref` 返回完整来源名称、ID、版本与哈希，无修订时为空 |
 | `search_knowledge` | 本次绑定证据中的文字检索 |
 
 工具不提供任意 SQL、Shell、文件读写或医院写权限。输出须符合 `agent-output.v1` 并通过引用范围校验；病历文本、证据原文与工具结果中的指令不获得操作权限。
+
+SDK 使用内部 `StructuredOutput` 工具提交 `output_format` 定义的最终 JSON。适配器在工具白名单和 `PreToolUse` 检查中同时允许其确切名称，其他未知工具仍拒绝。它不属于临床 MCP，也不提供数据库、文件或医院访问；返回结果继续经过 `AgentOutput` 合同、任务类型、引用、候选范围和原文位置校验。主 Agent 与 Reviewer 使用同一边界。机制参考 [SDK 结构化输出](https://code.claude.com/docs/en/agent-sdk/structured-outputs)和[权限评估](https://code.claude.com/docs/en/agent-sdk/permissions)；2026-10-10 核对，适用本次安装的 Python SDK `0.2.164`。
 
 产品运行提示词为 [recommendation.v1.md](../backend/src/chemo_agent_product/agent_runtime/prompts/recommendation.v1.md) 和 [reviewer.v1.md](../backend/src/chemo_agent_product/agent_runtime/prompts/reviewer.v1.md)。它们与工程 AI 使用的 [AGENTS.md](../AGENTS.md) 分属不同用途。
 
