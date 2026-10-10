@@ -148,6 +148,28 @@ def test_summary_sources_are_required_by_sdk_schema_and_output_contract():
     assert validate_output(item, "RECOMMENDATION", [REF], [], set()).summary_source_refs == [REF]
 
 
+def test_sdk_schema_rejects_unknown_sources_and_changed_frozen_hashes():
+    import jsonschema
+
+    config = Settings(
+        _env_file=None,
+        model_enabled=True,
+        model_api_key=SecretStr("CONTRACT_ONLY"),
+        model_name="CONTRACT_ONLY",
+    )
+    options = ClaudeAdapter(config).options(
+        "RECOMMENDATION", "contract", {}, "/tmp", [REF.model_dump(mode="json")]
+    )
+    schema = options.output_format["schema"]
+    jsonschema.validate(payload(), schema)
+    for field, value in [("id", "unknown"), ("version", "2"), ("content_hash", "b" * 64)]:
+        item = payload()
+        item["summary_source_refs"][0][field] = value
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(item, schema)
+    assert "enum" not in AgentOutput.model_json_schema()["$defs"]["Reference"]
+
+
 def test_unknown_reference_and_out_of_range_quote_rejected():
     item = payload()
     item["summary_source_refs"][0]["id"] = "unknown"

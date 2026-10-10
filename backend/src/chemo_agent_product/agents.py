@@ -304,7 +304,14 @@ class AgentService:
                 return await self.call(run, bindings, name, args, job, worker)
 
             payload, usage = await self.adapter.run(
-                run["profile_kind"], run["input_reference"], dispatch
+                run["profile_kind"],
+                {
+                    **run["input_reference"],
+                    "source_reference_catalog": list(
+                        {r.model_dump_json(): r.model_dump(mode="json") for r in bindings["refs"]}.values()
+                    ),
+                },
+                dispatch,
             )
             output = validate_output(
                 payload,

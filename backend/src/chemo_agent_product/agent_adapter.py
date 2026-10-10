@@ -116,7 +116,7 @@ class ClaudeAdapter:
     def __init__(self, settings: Settings):
         self.settings = settings
 
-    def options(self, kind, prompt, server, cwd):
+    def options(self, kind, prompt, server, cwd, source_refs=None):
         from claude_agent_sdk import ClaudeAgentOptions, HookMatcher, PermissionResultDeny
 
         # SDK final JSON delivery is separate from access to the environment.
@@ -156,6 +156,10 @@ class ClaudeAdapter:
         }
         if config.model_base_url:
             env["ANTHROPIC_BASE_URL"] = config.model_base_url
+        schema = AgentOutput.model_json_schema()
+        if source_refs is not None:
+            # The SDK validates exact frozen tuples before delivering final JSON.
+            schema["$defs"]["Reference"]["enum"] = source_refs
         return ClaudeAgentOptions(
             tools=[],
             allowed_tools=allowed_tools,
@@ -187,7 +191,7 @@ class ClaudeAdapter:
             cwd=cwd,
             max_turns=config.model_max_turns,
             max_budget_usd=config.model_max_budget_usd,
-            output_format={"type": "json_schema", "schema": AgentOutput.model_json_schema()},
+            output_format={"type": "json_schema", "schema": schema},
             include_partial_messages=False,
             stderr=lambda line: None,
         )
@@ -252,7 +256,13 @@ class ClaudeAdapter:
             )
         server = create_sdk_mcp_server(name="clinical", version="1.0.0", tools=definitions)
         with tempfile.TemporaryDirectory(prefix="chemo-agent-isolated-") as cwd:
-            options = self.options(kind, prompt_path(kind).read_text(), server, cwd)
+            options = self.options(
+                kind,
+                prompt_path(kind).read_text(),
+                server,
+                cwd,
+                input_payload.get("source_reference_catalog"),
+            )
             async with asyncio.timeout(self.settings.model_timeout_seconds):
                 async with ClaudeSDKClient(options=options) as client:
                     await client.query(json.dumps(input_payload, ensure_ascii=False, default=str))
